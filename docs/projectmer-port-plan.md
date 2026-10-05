@@ -5,17 +5,23 @@ Triangle and Quad additions) to the Carl Mod fork. It sets out the feature matri
 compatibility, the mobile performance design, tool-gun editing without server-specific settings, and a
 file-level port and verification plan.
 
-Path abbreviations used below:
+Paths without a prefix are relative to this repository (`src/ProjectMER`, `docs/`, `tools/make-mer-fixtures.py`).
+`../labapimobile/` is the sibling [LabAPI-Mobile](https://github.com/Michaelihc/labapimobile) checkout, which holds
+LabAPI, the test tools (`tools/Start-TestServer.ps1`, `tools/Send-ServerCommand.ps1`, `tools/android/`,
+`tools/EventProbe/`) and the extracted server (`.runtime/server-original`).
+
+Path abbreviations used below. Entries marked *local* are decompilations and reference copies in the author's local
+workspace; they are not part of either repository.
 
 | Abbreviation | Path |
 |---|---|
-| `PMER/` | `.refereces/scpsl-metarepo/.references/Reference Plugins/ProjectMER/` |
-| `MER132/` | `../scpsl-mobile-analysis-20261005/references/MapEditorReborn-sl13.2/MapEditorReborn/` |
-| `FORK/` | `../scpsl-mobile-analysis-20261005/decompiled/server/` (fork Assembly-CSharp, Mono CIL bodies) |
-| `CLIENT/` | `../scpsl-mobile-analysis-20261005/decompiled/carl-client/` (IL2CPP metadata view; bodies are placeholders) |
-| `OFFICIAL/` | `.refereces/scpsl-metarepo/.references/Decompiled/DedicatedServer/Assembly-CSharp/` (SL 14.2.7) |
-| `MIRROR/` | `.runtime/server-original/Carl Mod_Data/Managed/Mirror.dll`, decompiled with `ilspycmd -p -o <dir> Mirror.dll`; cited as `Mirror/<File>.cs: <member>` |
-| `ASSETS` | `.runtime/server-original/Carl Mod_Data/{resources.assets,sharedassets1.assets,level1}` |
+| `PMER/` | Upstream ProjectMER source, <https://github.com/Michal78900/ProjectMER> (*local* copy: `.refereces/scpsl-metarepo/.references/Reference Plugins/ProjectMER/` in the LabAPI-Mobile workspace) |
+| `MER132/` | MapEditorReborn for SL 13.2, <https://github.com/Michal78900/MapEditorReborn> (*local*: Carl Mod analysis workspace, `references/MapEditorReborn-sl13.2/MapEditorReborn/`) |
+| `FORK/` | Decompiled Carl Mod server `Assembly-CSharp`, Mono CIL bodies (*local*: Carl Mod analysis workspace, `decompiled/server/`) |
+| `CLIENT/` | Carl Mod client IL2CPP metadata view; bodies are placeholders (*local*: Carl Mod analysis workspace, `decompiled/carl-client/`) |
+| `OFFICIAL/` | Decompiled official SL 14.2.7 dedicated server `Assembly-CSharp` (*local*: `.refereces/scpsl-metarepo/.references/Decompiled/DedicatedServer/Assembly-CSharp/` in the LabAPI-Mobile workspace) |
+| `MIRROR/` | `../labapimobile/.runtime/server-original/Carl Mod_Data/Managed/Mirror.dll`, decompiled with `ilspycmd -p -o <dir> Mirror.dll`; cited as `Mirror/<File>.cs: <member>` |
+| `ASSETS` | `../labapimobile/.runtime/server-original/Carl Mod_Data/{resources.assets,sharedassets1.assets,level1}` |
 
 The client is IL2CPP but built from the same game version as the server, and its metadata has the same
 fields and members for the toy classes (`CLIENT/AdminToys/*.cs`). Client toy behaviour below is
@@ -652,7 +658,7 @@ Indicators use one audience: the players who turned them on (§1.4).
 - N fewer draw-call candidates and N fewer transforms, renderers and colliders on the phone
 - N fewer entries in that connection's per-tick broadcast walk on the server
 
-**Measured on the server** (phase B, port 7794, `.runtime/b1-selftest`). Test players are server dummies; a Harmony
+**Measured on the server** (phase B, port 7794, a server copy under `../labapimobile/.runtime/`). Test players are server dummies; a Harmony
 prefix on `ServerDummyConnection.SendToTransport` parses the batches the server sends each of them. Map: a 500-cube
 grid on the Surface, a 500-cube grid and 200 primitives in LCZ, and 3 doors; default limits (20 per frame, 3 ms).
 
@@ -795,7 +801,7 @@ dynamic toys) and physics schematics (a falling box and its child fall 2.65 m to
   compares the HUD inputs every `hud_interval`, rebuilds the text only when one changed and sends it only
   on a change or a keep-alive (§4).
 - `IndicatorObject.TryGetIndicator` does a linear `Dictionary.First` search. Add a reverse dictionary.
-- No LINQ, closures or string formatting in the spawn-queue, sync or culling paths (AGENTS.md
+- No LINQ, closures or string formatting in the spawn-queue, sync or culling paths ([AGENTS.md](../AGENTS.md)
   performance rules).
 
 ---
@@ -961,12 +967,12 @@ handler already processes are used (`FirearmBasicMessagesHandler.ServerRequestRe
 ### 5.1 Steps
 
 1. **Project skeleton.**
-   - `src/ProjectMER/ProjectMER.csproj` targets net48 with LangVersion 12, matching `LabApi.csproj`.
-   - It references the fork's Managed folder from `Directory.Build.props`: publicized
+   - `src/ProjectMER/ProjectMER.csproj` targets net48 with LangVersion 12, matching LabAPI-Mobile's `LabApi.csproj`.
+   - It references the fork's Managed folder (`CarlManaged` in `Directory.Build.props`): publicized
      `Assembly-CSharp`, `Assembly-CSharp-firstpass` and `Mirror`, plus `DigitalDust` (MEC),
      `CommandSystem.Core`, `NorthwoodLib`, `YamlDotNet`, `Newtonsoft.Json`, and the Unity modules
      (Core, Physics, Animation, AssetBundle).
-   - It has a `ProjectReference` to `src/LabApi`, plus `Lib.Harmony` 2.3.6.
+   - It has a `ProjectReference` to `../labapimobile/src/LabApi` (`LabApiMobileRoot`), plus `Lib.Harmony` 2.3.6.
    - Data goes to `LabAPI-Mobile/configs/ProjectMER/{Maps,Schematics}` through `PathManager.Configs`.
 2. **Near-verbatim files** (table 5.2). Fix compile errors against the fork: `KeycardPermissions`,
    `FirearmStatus`, `RoleTypeId`/`ItemType` names, and `CachedLayerMask` in `ToolGunHandler`.
@@ -1013,7 +1019,7 @@ handler already processes are used (`FirearmBasicMessagesHandler.ServerRequestRe
 15. **Docs**:
     - the ProjectMER section of `docs/compatibility.md`: supported, adapted and absent map object types,
       schematic block types, and schematic API and event differences
-    - the user README `src/ProjectMER/README.md`: installation, commands, the configuration reference
+    - the user README [`README.md`](../README.md): installation, commands, the configuration reference
       with the mobile options, mobile limits, and notes for plugin developers
 
 ### 5.2 File mapping (`PMER/` → `src/ProjectMER/`)
@@ -1069,12 +1075,11 @@ handler already processes are used (`FirearmBasicMessagesHandler.ServerRequestRe
 
 **Build and install.**
 
-1. Build with `dotnet build src/ProjectMER/ProjectMER.csproj -c Release --artifacts-path
-   C:\tmp\labapi-mer`.
-2. Run the LabAPI installer on a server copy (never `server-original`).
+1. Build with `dotnet build ProjectMER-Mobile.sln -c Release --artifacts-path <dir>`.
+2. Run LabAPI-Mobile's installer (`../labapimobile/src/Installer`) on a server copy (never `server-original`).
 3. Put `ProjectMER.dll` in `LabAPI-Mobile` plugins.
-4. Start the server with `tools/Start-TestServer.ps1 -CommandSession mer` and send commands with
-   `tools/Send-ServerCommand.ps1`. Results are checked in the server log, because the file console
+4. Start the server with `../labapimobile/tools/Start-TestServer.ps1 -CommandSession mer` and send commands with
+   `../labapimobile/tools/Send-ServerCommand.ps1`. Results are checked in the server log, because the file console
    does not return output.
 
 **Fixtures.** Generated by a script into `.runtime/` and never committed:
@@ -1097,7 +1102,7 @@ handler already processes are used (`FirearmBasicMessagesHandler.ServerRequestRe
 - Without players the server enters idle mode after `idle_mode_time` (5 s): `targetFrameRate = 1` and
   `timeScale = 0.01`, which stretches every spawn-queue and MEC timing. Set `idle_mode_enabled: false`
   in `config_gameplay.txt` for measurements.
-- `tools/Send-ServerCommand.ps1` deletes command files that the server has not picked up yet when
+- `../labapimobile/tools/Send-ServerCommand.ps1` deletes command files that the server has not picked up yet when
   `-WaitSec` is short (below about 1 s), so the command is lost.
 - Player-bound commands (`select`, `delete`, `modify`, `position`...) can run as the host hub with
   `CommandProcessor.ProcessQuery(query, new PlayerCommandSender(ReferenceHub.HostHub))`.
@@ -1118,7 +1123,7 @@ handler already processes are used (`FirearmBasicMessagesHandler.ServerRequestRe
 
 **Android client.**
 
-1. `tools/android/Start-Emulator.ps1`, `Install-Client.ps1`, `Start-Client.ps1`, then
+1. `../labapimobile/tools/android/Start-Emulator.ps1`, `Install-Client.ps1`, `Start-Client.ps1`, then
    `Connect-Client.ps1 -Address 10.0.2.2:<port>`.
 2. **Visual correctness** (`Capture.ps1` at fixed RA teleport spots):
    - all flag encodings, including Quad/Plane facing after the all-negative and `Visible`-only
@@ -1157,9 +1162,9 @@ handler already processes are used (`FirearmBasicMessagesHandler.ServerRequestRe
    translation (`Measure-FrameTime.ps1` notes), so its absolute numbers are not phone numbers. Final
    values for the §1.7 budgets come from this pass.
 
-**Measured on the Android emulator** (Carl Mod 0.0.4 client, AVD `carlmod_api36`, 2400x1080, server `.runtime/server-emu`
+**Measured on the Android emulator** (Carl Mod 0.0.4 client, AVD `carlmod_api36`, 2400x1080, server `../labapimobile/.runtime/server-emu`
 on the same host; fixtures from `tools/make-mer-fixtures.py`, the `A*` set on a stage in front of the surface NTF spawn;
-docs/testing.md). Frame times are `Measure-FrameTime.ps1` runs of 30 s with the player still; they compare
+[docs/testing.md](testing.md)). Frame times are `Measure-FrameTime.ps1` runs of 30 s with the player still; they compare
 configurations, not phones.
 
 - **Resend in place** (the riskiest assumption, §3.2): one static cube moved with `mp pos add`, turned with
@@ -1230,13 +1235,13 @@ configurations, not phones.
   | 20 (5 runs) | 1.7 s | 48-50 | 66-86 (mean 72) | 118-250 (mean 167) |
   | 50 (3 runs) | 0.7 s | 36-38 | 114-122 | 300-500 |
 
-- **Chosen defaults.** `spawn_max_per_frame` 10 (was 20): worst frames about a third shorter for twice the stream time
+- **Chosen defaults.** `spawn_max_per_frame` 10 rather than 20: worst frames about a third shorter for twice the stream time
   (about 600 objects/s, 3-4 s for a 2000-2500-block map, mostly during the lobby). `light_intensity_scale` 0.025 (new).
   The others stand: `zone_culling_min_objects` 150 and the 150-visible target (150 cubes cost 3%),
   `networked_warn_total` 1500 (1500 visible would cost about 25-30%), `networked_hard_cap` 4000, `allow_light_shadows`
   false, `max_lights` 16, `max_lights_per_schematic` 4, `static_by_default` true.
 - **Measurement note.** Windows power throttling of a background emulator window cut the client from about 51 to 39 FPS
-  in the same scene; `Start-Emulator.ps1` and `Measure-FrameTime.ps1` now opt the emulator out (docs/testing.md).
+  in the same scene; `Start-Emulator.ps1` and `Measure-FrameTime.ps1` opt the emulator out (LabAPI-Mobile's docs/testing.md).
 
 ---
 

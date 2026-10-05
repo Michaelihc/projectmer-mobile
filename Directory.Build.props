@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <!-- LabAPI-Mobile checkout (https://github.com/Michaelihc/labapimobile); a sibling of this repository by default. -->
+    <LabApiMobileRoot Condition="'$(LabApiMobileRoot)' == ''">$(MSBuildThisFileDirectory)..\labapimobile</LabApiMobileRoot>
+    <LabApiMobileRoot>$([System.IO.Path]::GetFullPath('$(LabApiMobileRoot)'))</LabApiMobileRoot>
+    <!-- Carl Mod server Managed folder; produced by labapimobile's tools/extract-server.py from the server ZIP. -->
+    <CarlManaged Condition="'$(CarlManaged)' == ''">$(LabApiMobileRoot)\.runtime\server-original\Carl Mod_Data\Managed</CarlManaged>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+</Project>

@@ -19,9 +19,23 @@
     <Using Include="System.Linq" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <LabApiProject>$(LabApiMobileRoot)\src\LabApi\LabApi.csproj</LabApiProject>
+    <!-- LabApi is not in ProjectMER-Mobile.sln; without this a solution build compiles it as Debug. -->
+    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
+  </PropertyGroup>
+
   <ItemGroup>
-    <ProjectReference Include="..\LabApi\LabApi.csproj" Private="false" />
+    <ProjectReference Include="$(LabApiProject)" Private="false" Condition="Exists('$(LabApiProject)')" />
   </ItemGroup>
+
+  <!-- LabApi.dll comes from a LabAPI-Mobile checkout, and the game assemblies from its extracted server. -->
+  <Target Name="CheckLabApiMobile" BeforeTargets="Restore;_GenerateRestoreGraph;CollectPackageReferences;ResolveProjectReferences;BeforeBuild">
+    <Error Condition="!Exists('$(LabApiProject)')"
+           Text="LabAPI-Mobile not found: '$(LabApiProject)' does not exist. Clone https://github.com/Michaelihc/labapimobile next to this repo or set LabApiMobileRoot." />
+    <Error Condition="!Exists('$(CarlManaged)\Assembly-CSharp.dll')"
+           Text="Carl Mod server assemblies not found in '$(CarlManaged)'. Extract the server with labapimobile's tools/extract-server.py or set CarlManaged." />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.3" PrivateAssets="all" ExcludeAssets="runtime" />

@@ -1,0 +1,37 @@
+ProjectMER-Mobile {{VERSION}} for the Carl Mod SCP: Secret Laboratory server
+===========================================================================
+
+ProjectMER (MapEditorReborn, LabAPI edition) ported to LabAPI-Mobile. It runs
+on the server only: players keep the stock Carl Mod Android client.
+Built from commit {{COMMIT}}.
+
+Requirements
+------------
+LabAPI-Mobile installed on the server:
+https://github.com/Michaelihc/labapimobile
+
+Install
+-------
+1. Install LabAPI-Mobile and start the server once, so its data folder
+   <AppData>\SCP Secret Laboratory\LabAPI-Mobile\ exists. <AppData> is
+   %APPDATA% of the user running the server, or the server's own AppData
+   folder when hoster_policy.txt contains "gamedir_for_configs: true".
+2. Stop the server and copy plugins\ProjectMER.dll from this archive into
+
+     <AppData>\SCP Secret Laboratory\LabAPI-Mobile\plugins\global\
+
+3. Start the server. The log shows ProjectMER being enabled. The first start
+   creates
+     LabAPI-Mobile\configs\ProjectMER\Maps         maps, <name>.yml
+     LabAPI-Mobile\configs\ProjectMER\Schematics   schematics, <name>\<name>.json
+4. Grant the commands in LabAPI-Mobile\configs\permissions.yml: "mpr.*" for a
+   group, or "mpr.<command>" (for example mpr.load) per command.
+5. Use "mp" in the Remote Admin console ("mp list", "mp load <map>"). In the
+   phone's client console, type commands with a leading slash: /mp list
+
+Phones render every networked object. Keep maps small: about 150 visible
+primitives at a time is a good budget. "mp stats" shows the counts.
+
+README.md (English) and README.zh-CN.md (Simplified Chinese) describe the
+commands, the tool gun, the configuration and what content Carl Mod supports.
+NOTICE.md lists the authors and the licence status.

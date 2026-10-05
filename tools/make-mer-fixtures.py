@@ -9,7 +9,9 @@ Output:
 Usage:
   python tools/make-mer-fixtures.py [--real <ProjectMER schematics dir>] [--out <dir>]
 
-Real schematics are copied, never modified. Fixtures are not committed.
+--real (or the MER_REAL_SCHEMATICS environment variable) names a folder of real ProjectMER schematics, one folder per
+schematic (<dir>/<name>/<name>.json); those listed in REAL_NAMES are copied, never modified. With neither, only the
+synthetic fixtures are written. Fixtures are not committed.
 """
 
 import argparse
@@ -19,9 +21,7 @@ import os
 import shutil
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_REAL = (r"<scpsl-plugins-metarepo>\.tests\offline-clients\runtime"
-                r"\baselines\oa1\318d7a87fbb96fecedd38834f25eaac0c50295a2c66cfe7df1afc10df79b90ab\configs\8910\AutoEvent"
-                r"\Schematics\ProjectMER")
+REAL_ENV = "MER_REAL_SCHEMATICS"
 REAL_NAMES = ["35Hp", "Battle", "DeathParty", "Shipment", "Skeld", "Jail"]
 
 # Server-side fixtures: a point in the Surface zone (y >= 900) away from players. Carl Mod's surface is a closed hall
@@ -769,8 +769,10 @@ def write_android(schematics, maps):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--real", default=DEFAULT_REAL)
-    parser.add_argument("--out", default=os.path.join(REPO, ".runtime", "mer-fixtures"))
+    parser.add_argument("--real", default=os.environ.get(REAL_ENV) or None,
+                        help=f"folder of real ProjectMER schematics to copy (default: ${REAL_ENV}; unset: skip them)")
+    parser.add_argument("--out", default=os.path.join(REPO, ".runtime", "mer-fixtures"),
+                        help="output folder, deleted and rewritten (default: .runtime/mer-fixtures)")
     args = parser.parse_args()
 
     schematics = os.path.join(args.out, "Schematics")
@@ -802,7 +804,7 @@ def main():
         json.dump(rigidbodies, f, indent=1)
 
     copied = []
-    for name in REAL_NAMES:
+    for name in REAL_NAMES if args.real else []:
         source = os.path.join(args.real, name)
         if os.path.isdir(source):
             shutil.copytree(source, os.path.join(schematics, name))
