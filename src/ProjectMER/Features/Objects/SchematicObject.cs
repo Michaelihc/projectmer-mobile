@@ -350,7 +350,7 @@ public class SchematicObject : MonoBehaviour
 	/// Runs build steps until <paramref name="deadline"/> (a <see cref="Stopwatch"/> timestamp). Each call that has work
 	/// makes at least one step. Called by <see cref="SpawnQueue"/> every frame.
 	/// </summary>
-	/// <returns>Whether the build is over (finished, failed or destroyed).</returns>
+	/// <returns>Whether the build is over (finished, failed or destroyed). A step that throws fails the build.</returns>
 	internal bool StepBuild(long deadline)
 	{
 		if (this == null || _phase is BuildPhase.NotStarted or >= BuildPhase.Spawned)
@@ -438,6 +438,14 @@ public class SchematicObject : MonoBehaviour
 				if (Stopwatch.GetTimestamp() >= deadline)
 					return false;
 			}
+		}
+		catch (Exception e)
+		{
+			// Malformed block data (a "Chance" or "IsInteractable" that is no number or boolean, a null rigidbody entry...):
+			// destroy the half-built schematic so its light reservations are released and its map does not wait for it.
+			Logger.Error($"Schematic \"{Name}\" could not be built and was removed: {e}");
+			Fail();
+			return true;
 		}
 		finally
 		{
@@ -572,9 +580,18 @@ public class SchematicObject : MonoBehaviour
 		foreach (int id in _rigidbodies.Keys)
 			_dynamicRoots.Add(id);
 
+		// Rigidbody entries of blocks other than pickups put the body on the block's anchor (SetUpDynamic).
+		_physicsRoots.Clear();
+		List<SchematicBlockData> blocks = _data.Blocks;
+		for (int i = 0; i < blocks.Count; i++)
+		{
+			if (_rigidbodies.ContainsKey(blocks[i].ObjectId) && _plan.Outputs[i] != BlockOutput.Pickup)
+				_physicsRoots.Add(blocks[i].ObjectId);
+		}
+
 		_lightAdmitted = AdmitLights();
 		_stack.Clear();
-		PushChildren(_data.RootObjectId, transform, false);
+		PushChildren(_data.RootObjectId, transform, false, false);
 	}
 
 	/// <summary>
@@ -608,9 +625,10 @@ public class SchematicObject : MonoBehaviour
 		List<SchematicBlockData> blocks = _data.Blocks;
 		while (_stack.Count > 0)
 		{
-			(int index, Transform parent, bool dynamicParent) = _stack.Pop();
+			(int index, Transform parent, bool dynamicParent, bool physicsParent) = _stack.Pop();
 			SchematicBlockData block = blocks[index];
 			bool dynamic = dynamicParent || _dynamicRoots.Contains(block.ObjectId);
+			bool physics = physicsParent || _physicsRoots.Contains(block.ObjectId);
 			List<int> children = _plan.GetChildren(block.ObjectId);
 			BlockOutput output = _plan.Outputs[index];
 
@@ -625,7 +643,7 @@ public class SchematicObject : MonoBehaviour
 			if (dynamic || children.Count > 0 || output == BlockOutput.None)
 				anchor = CreateAnchor(block, parent, localRotation);
 
-			BlockRecord record = new(block, index, output, parent, anchor, localRotation) { InDynamicSubtree = dynamic, Flags = _plan.Flags[index] };
+			BlockRecord record = new(block, index, output, parent, anchor, localRotation) { InDynamicSubtree = dynamic, InPhysicsSubtree = physics, Flags = _plan.Flags[index] };
 			GameObject? networked = output == BlockOutput.None ? null : CreateNetworked(record);
 			if (networked == null && anchor == null)
 				anchor = record.Anchor = CreateAnchor(block, parent, localRotation);
@@ -647,7 +665,7 @@ public class SchematicObject : MonoBehaviour
 			}
 
 			if (children.Count > 0)
-				PushChildren(block.ObjectId, anchor!, dynamic);
+				PushChildren(block.ObjectId, anchor!, dynamic, physics);
 
 			if (_stack.Count > 0 && Stopwatch.GetTimestamp() >= deadline)
 				return false;
@@ -793,11 +811,11 @@ public class SchematicObject : MonoBehaviour
 		}
 	}
 
-	private void PushChildren(int objectId, Transform parent, bool dynamic)
+	private void PushChildren(int objectId, Transform parent, bool dynamic, bool physics)
 	{
 		List<int> children = _plan.GetChildren(objectId);
 		for (int i = children.Count - 1; i >= 0; i--)
-			_stack.Push((children[i], parent, dynamic));
+			_stack.Push((children[i], parent, dynamic, physics));
 	}
 
 	private bool IsStaticBlock(SchematicBlockData block) => SchematicOptimizer.IsStaticBlock(block, _settings.StaticByDefault, _settings.HonorStaticProperty);
@@ -1010,13 +1028,22 @@ public class SchematicObject : MonoBehaviour
 
 	/// <summary>
 	/// Makes the toys of animated and physics subtrees (or every toy, for <paramref name="followAll"/>) follow their
-	/// anchors through <see cref="SchematicSync"/>; physics toys drive their anchors instead.
+	/// anchors through <see cref="SchematicSync"/>, and puts the rigidbodies on their blocks' anchors.
 	/// </summary>
+	/// <remarks>
+	/// Blocks are not children of each other on the server, so a body cannot take its subtree's colliders from the toys as
+	/// in ProjectMER. A rigidbody entry therefore goes on the block's anchor, and every collidable primitive of its subtree
+	/// gets a server-side copy of its collider on its own anchor, under the body: together they are the body's compound
+	/// collider, as the parented toys were in ProjectMER. The toys' own server colliders are switched off (they would
+	/// collide with the body they follow), and every toy of the subtree follows its anchor. Entries of pickups apply to the
+	/// pickup's own body.
+	/// </remarks>
 	private void SetUpDynamic(bool followAll)
 	{
 		if (!TryGetComponent(out SchematicSync sync))
 			sync = gameObject.AddComponent<SchematicSync>();
 
+		sync.enabled = true;
 		float syncInterval = Config.DynamicToySyncInterval;
 
 		foreach (BlockRecord record in _records)
@@ -1026,18 +1053,19 @@ public class SchematicObject : MonoBehaviour
 
 			record.Follows = true;
 			record.Toy.SyncInterval = syncInterval;
-			if (_rigidbodies.TryGetValue(record.Data.ObjectId, out SerializableRigidbody rigidbodyData))
-			{
-				// Physics moves the toy (it has the collider); its own LateUpdate syncs it and it drives its anchor.
-				ApplyRigidbody(record.Networked!, rigidbodyData);
-				sync.AddDriver(record.Anchor!, record.Toy);
-				continue;
-			}
-
 			sync.AddFollower(record.Anchor!, record.Toy);
 			SpawnQueue.DisableWhenReady(record.Toy.Base);
 
-			if (record.Output == BlockOutput.Primitive && (record.Flags & PrimitiveFlags.Collidable) != 0 && !record.Networked!.TryGetComponent(out Rigidbody _))
+			if (record.Output != BlockOutput.Primitive || (record.Flags & PrimitiveFlags.Collidable) == 0)
+				continue;
+
+			if (record.InPhysicsSubtree)
+			{
+				AddPhysicsCollider(record, sync);
+				continue;
+			}
+
+			if (!record.Networked!.TryGetComponent(out Rigidbody _))
 			{
 				// A moving static collider makes PhysX rebuild it; a kinematic body is cheap to move.
 				Rigidbody kinematic = record.Networked.AddComponent<Rigidbody>();
@@ -1046,34 +1074,96 @@ public class SchematicObject : MonoBehaviour
 			}
 		}
 
-		// Rigidbody entries of pickups apply to the pickup's own body (it has the collider); entries of blocks without a
-		// networked object (empties) move their anchor, and the subtree follows.
+		// Once: a later switch to dynamic (IsStatic = false) must not reset the bodies.
+		if (_rigidbodiesApplied)
+			return;
+
+		_rigidbodiesApplied = true;
 		foreach (KeyValuePair<int, SerializableRigidbody> pair in _rigidbodies)
 		{
-			BlockRecord? owner = null;
-			foreach (BlockRecord record in _records)
+			if (_physicsRoots.Contains(pair.Key))
 			{
-				if (record.Data.ObjectId == pair.Key)
+				if (ObjectFromId.TryGetValue(pair.Key, out Transform anchor) && anchor != transform)
 				{
-					owner = record;
-					break;
-				}
-			}
+					Rigidbody body = ApplyRigidbody(anchor.gameObject, pair.Value);
 
-			if (owner != null)
-			{
-				if (owner.Output == BlockOutput.Pickup)
-					ApplyRigidbody(owner.Networked!, pair.Value);
+					// The toys' own colliders exist until they are switched off; a moving body would be knocked by them.
+					if (!pair.Value.IsKinematic)
+						sync.HoldUntilCollidersOff(body);
+				}
 
 				continue;
 			}
 
-			if (ObjectFromId.TryGetValue(pair.Key, out Transform target) && target != transform)
-				ApplyRigidbody(target.gameObject, pair.Value);
+			foreach (BlockRecord record in _records)
+			{
+				if (record.Data.ObjectId == pair.Key && record.Output == BlockOutput.Pickup)
+				{
+					ApplyRigidbody(record.Networked!, pair.Value);
+					break;
+				}
+			}
 		}
 	}
 
-	private static void ApplyRigidbody(GameObject gameObject, SerializableRigidbody data)
+	/// <summary>
+	/// Gives a collidable primitive of a physics subtree its collider on its anchor (part of the body's compound collider)
+	/// and switches the toy's own server collider off.
+	/// </summary>
+	private static void AddPhysicsCollider(BlockRecord record, SchematicSync sync)
+	{
+		if (record.PhysicsCollider != null || record.Anchor == null || record.Toy is not LabApi.Features.Wrappers.PrimitiveObjectToy toy)
+			return;
+
+		// The anchor has the block's world transform; the toy renders the same shape (the flag encoding only mirrors it).
+		PrimitiveType type = toy.Type;
+		GameObject holder = new("MER physics collider");
+		holder.transform.SetParent(record.Anchor, false);
+		Mesh mesh = PrimitiveMesh(type);
+		if (type is PrimitiveType.Plane or PrimitiveType.Quad)
+		{
+			// Flat: the toy's collider is a non-convex mesh, which a moving body cannot use. A thin box covers the same face.
+			Bounds bounds = mesh.bounds;
+			Vector3 size = bounds.size;
+			Vector3 lossy = record.Anchor.lossyScale;
+			size.x = Mathf.Max(size.x, PhysicsMinThickness / Mathf.Max(Mathf.Abs(lossy.x), 0.0001f));
+			size.y = Mathf.Max(size.y, PhysicsMinThickness / Mathf.Max(Mathf.Abs(lossy.y), 0.0001f));
+			size.z = Mathf.Max(size.z, PhysicsMinThickness / Mathf.Max(Mathf.Abs(lossy.z), 0.0001f));
+			BoxCollider box = holder.AddComponent<BoxCollider>();
+			box.center = bounds.center;
+			box.size = size;
+			record.PhysicsCollider = box;
+		}
+		else
+		{
+			// The same convex mesh collider the toy builds (PrimitiveObjectToy.SetPrimitive).
+			MeshCollider meshCollider = holder.AddComponent<MeshCollider>();
+			meshCollider.sharedMesh = mesh;
+			meshCollider.convex = true;
+			record.PhysicsCollider = meshCollider;
+		}
+
+		sync.KeepServerColliderOff(toy.Base);
+	}
+
+	/// <summary>
+	/// Gets the mesh Unity uses for a primitive type (a built-in asset, shared).
+	/// </summary>
+	private static Mesh PrimitiveMesh(PrimitiveType type)
+	{
+		int index = (int)type;
+		Mesh? mesh = PrimitiveMeshes[index];
+		if (mesh != null)
+			return mesh;
+
+		GameObject temporary = GameObject.CreatePrimitive(type);
+		mesh = temporary.GetComponent<MeshFilter>().sharedMesh;
+		Destroy(temporary);
+		PrimitiveMeshes[index] = mesh;
+		return mesh;
+	}
+
+	private static Rigidbody ApplyRigidbody(GameObject gameObject, SerializableRigidbody data)
 	{
 		if (!gameObject.TryGetComponent(out Rigidbody rigidbody))
 			rigidbody = gameObject.AddComponent<Rigidbody>();
@@ -1082,12 +1172,16 @@ public class SchematicObject : MonoBehaviour
 		rigidbody.useGravity = data.UseGravity;
 		rigidbody.constraints = data.Constraints;
 		rigidbody.mass = data.Mass;
+		return rigidbody;
 	}
 
 	private void SetStatic(bool value)
 	{
 		EnsureSpawned();
-		if (!IsSpawned || IsStatic == value)
+
+		// The getter is false as soon as one toy is dynamic (animated or physics parts), so it cannot tell whether every toy
+		// was switched already; _forcedDynamic does.
+		if (!IsSpawned || (value ? !_forcedDynamic && IsStatic : _forcedDynamic))
 			return;
 
 		if (!value)
@@ -1126,8 +1220,10 @@ public class SchematicObject : MonoBehaviour
 		_forcedDynamic = false;
 		if (TryGetComponent(out SchematicSync sync))
 		{
+			// Kept (disabled) instead of destroyed: Destroy is deferred to the end of the frame, and a switch back to dynamic
+			// in the same frame would register its followers on the dying component.
 			sync.Clear();
-			Destroy(sync);
+			sync.enabled = false;
 		}
 
 		foreach (BlockRecord record in _records)
@@ -1359,15 +1455,22 @@ public class SchematicObject : MonoBehaviour
 	private readonly List<NetworkIdentity> _networkIdentities = [];
 	private readonly List<AdminToyBase> _adminToyBases = [];
 	private readonly List<BlockRecord> _records = [];
-	private readonly Stack<(int Index, Transform Parent, bool Dynamic)> _stack = new();
+	private readonly Stack<(int Index, Transform Parent, bool Dynamic, bool Physics)> _stack = new();
 	private readonly Dictionary<int, RuntimeAnimatorController> _animators = [];
 
 	private static Transform? _scratch;
 
+	private static readonly Mesh?[] PrimitiveMeshes = new Mesh?[6];
+
+	// Thickness of the colliders that stand in for planes and quads in physics subtrees, in metres.
+	private const float PhysicsMinThickness = 0.01f;
+
 	private MapEditorObject? _mapEditorObject;
 	private readonly HashSet<int> _dynamicRoots = [];
+	private readonly HashSet<int> _physicsRoots = [];
 	private Dictionary<int, SerializableRigidbody> _rigidbodies = [];
 	private bool _forcedDynamic;
+	private bool _rigidbodiesApplied;
 	private bool _resyncScheduled;
 	private float _lastResync = float.NegativeInfinity;
 
@@ -1451,6 +1554,16 @@ public class SchematicObject : MonoBehaviour
 		/// Gets or sets whether the block is in an animated or physics subtree.
 		/// </summary>
 		public bool InDynamicSubtree { get; set; }
+
+		/// <summary>
+		/// Gets or sets whether the block is in the subtree of a rigidbody that is not a pickup's.
+		/// </summary>
+		public bool InPhysicsSubtree { get; set; }
+
+		/// <summary>
+		/// Gets or sets the server-side collider on the block's anchor that stands in for the toy's in a physics subtree.
+		/// </summary>
+		public Collider? PhysicsCollider { get; set; }
 
 		/// <summary>
 		/// Gets or sets the first source block of a merged block (its type and colour), or -1.

@@ -26,7 +26,9 @@ namespace ProjectMER.Features.ToolGun;
 /// <c>Cocked | Chambered | MagazineInserted</c> (the FSP-9 has a bolt lock, and an unchambered bolt-lock gun only clicks
 /// without sending the dry-fire request). It cannot shoot: the server refuses shots without ammo, reloads and unloads are
 /// cancelled, the acquisition refill that a firearm added without a pickup would get is disabled, and a tool gun that
-/// leaves the inventory by any path other than <c>mp tg</c> (death, cuffing, plugins) has its pickup destroyed.
+/// leaves the inventory by any path other than <c>mp tg</c> (death, cuffing, escaping, plugins) has its pickup locked and
+/// destroyed: the escape code gives the pickups of the old inventory back at once unless they are locked. SCP-914 leaves
+/// a tool gun in an inventory unchanged (its firearm upgrade would hand out a loaded gun).
 /// </para>
 /// <para>
 /// Inputs (all are requests the stock firearm handler already processes, see docs/projectmer-port-plan.md §4): attack
@@ -416,13 +418,19 @@ public class ToolGunItem
 	}
 
 	/// <summary>
-	/// Forgets a tool gun that left an inventory. A dropped tool gun (death, cuffing, a plugin) would be an ordinary
-	/// FSP-9 pickup, so the pickup is destroyed on the next frame (callers of <c>ServerDropItem</c> still use it this frame).
+	/// Forgets a tool gun that left an inventory. A dropped tool gun (death, cuffing, escaping, a plugin) would be an
+	/// ordinary FSP-9 pickup, so the pickup is locked at once and destroyed on the next frame (callers of
+	/// <c>ServerDropItem</c> still use it this frame). The lock keeps <c>InventoryItemProvider.SpawnPreviousInventoryPickups</c>
+	/// (escape) from putting the same serial straight back into the inventory as a plain FSP-9.
 	/// </summary>
 	private static void OnItemRemoved(ReferenceHub hub, ItemBase item, ItemPickupBase pickup)
 	{
 		if (item == null || !Forget(item.ItemSerial) || pickup == null)
 			return;
+
+		PickupSyncInfo info = pickup.Info;
+		info.Locked = true;
+		pickup.NetworkInfo = info;
 
 		Timing.CallDelayed(0f, () =>
 		{

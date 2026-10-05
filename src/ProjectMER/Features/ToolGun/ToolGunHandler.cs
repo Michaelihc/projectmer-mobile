@@ -43,6 +43,12 @@ public static class ToolGunHandler
 			return false;
 		}
 
+		if (objectType == ToolGunObjectType.Schematic && string.IsNullOrEmpty(schematicName))
+		{
+			Logger.Warn("No schematic chosen to create; pick one with mp tg schematic <name|index>.");
+			return false;
+		}
+
 		Room room = RoomExtensions.GetRoomAtPosition(position);
 
 		position = room.Name == RoomName.Outside ? position : room.Transform.InverseTransformPoint(position);
@@ -90,8 +96,19 @@ public static class ToolGunHandler
 		}
 
 		int before = map.SpawnedObjects.Count;
-		if (map.TryAddElement(id, serializableObject))
-			map.SpawnObject(id, serializableObject);
+		bool wasDirty = map.IsDirty;
+		if (!map.TryAddElement(id, serializableObject))
+			return false;
+
+		map.SpawnObject(id, serializableObject);
+		if (map.SpawnedObjects.Count == before)
+		{
+			// Nothing spawned (unknown schematic, budget or door limit, no matching room): keep no entry that a save would
+			// write to the map file.
+			map.TryRemoveElement(id);
+			map.IsDirty = wasDirty;
+			return false;
+		}
 
 		foreach (MapEditorObject mapEditorObject in map.SpawnedObjects)
 		{
@@ -103,7 +120,7 @@ public static class ToolGunHandler
 
 		// Give a new non-collidable primitive its editing trigger soon.
 		EditingColliders.MarkDirty();
-		return map.SpawnedObjects.Count > before;
+		return true;
 	}
 
 	public static void DeleteObject(MapEditorObject mapEditorObject)
@@ -123,7 +140,13 @@ public static class ToolGunHandler
 
 		IndicatorObject.TryDestroyIndicator(mapEditorObject);
 
-		MapSchematic map = MapUtils.LoadedMaps[mapEditorObject.MapName];
+		if (!MapUtils.LoadedMaps.TryGetValue(mapEditorObject.MapName, out MapSchematic map))
+		{
+			// Its map is no longer loaded; there is no entry to remove.
+			mapEditorObject.Destroy();
+			return;
+		}
+
 		if (map.TryRemoveElement(mapEditorObject.Id))
 			map.DestroyObject(mapEditorObject.Id);
 	}
@@ -227,7 +250,8 @@ public static class ToolGunHandler
 
 	/// <summary>
 	/// Casts the tool gun ray: the nearest solid surface, or a nearer MER trigger (indicators, teleports and the editing
-	/// triggers of non-collidable primitives). Other triggers on the tool gun layers are ignored.
+	/// triggers of non-collidable primitives, which are on <see cref="EditingColliders.Layer"/>). Other triggers on the tool
+	/// gun layers are ignored.
 	/// </summary>
 	public static bool Raycast(Vector3 origin, Vector3 direction, out RaycastHit hit)
 	{
@@ -235,7 +259,7 @@ public static class ToolGunHandler
 		bool found = Physics.Raycast(origin, direction, out hit, MaxDistance, mask, QueryTriggerInteraction.Ignore);
 		float limit = found ? hit.distance : MaxDistance;
 
-		int count = Physics.RaycastNonAlloc(origin, direction, Hits, limit, mask, QueryTriggerInteraction.Collide);
+		int count = Physics.RaycastNonAlloc(origin, direction, Hits, limit, mask | (1 << EditingColliders.Layer), QueryTriggerInteraction.Collide);
 		for (int i = 0; i < count; i++)
 		{
 			RaycastHit candidate = Hits[i];

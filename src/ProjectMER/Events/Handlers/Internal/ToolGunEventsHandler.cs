@@ -1,4 +1,5 @@
 using LabApi.Events.Arguments.PlayerEvents;
+using LabApi.Events.Arguments.Scp914Events;
 using LabApi.Events.CustomHandlers;
 using ProjectMER.Features.Extensions;
 using ProjectMER.Features.ToolGun;
@@ -25,13 +26,13 @@ namespace ProjectMER.Events.Handlers.Internal;
 /// <para>
 /// Aiming is read from the firearm's <c>AdsModule.ServerAds</c> when the attack arrives; <c>AimingWeapon</c> does not exist
 /// in LabAPI, and subscribing to <c>AimedWeapon</c> would make every player's aim requests allocate event arguments, so the
-/// HUD picks the aim state up on its next check instead. Unload requests are cancelled (the tool gun stays empty).
+/// HUD picks the aim state up on its next check instead. Unload requests are cancelled (the tool gun stays empty), and so
+/// is SCP-914's processing of a tool gun in an inventory.
 /// </para>
 /// </remarks>
 public class ToolGunEventsHandler : CustomEventsHandler
 {
-	public override void OnServerWaitingForPlayers() => ResetRound();
-
+	// Only on round restart: a WaitingForPlayers reset would also drop tool guns given by plugins handling that event first.
 	public override void OnServerRoundRestarted() => ResetRound();
 
 	public override void OnPlayerDryFiringWeapon(PlayerDryFiringWeaponEventArgs ev)
@@ -91,6 +92,13 @@ public class ToolGunEventsHandler : CustomEventsHandler
 
 		// Show the HUD at once, or hide it.
 		ToolGunHud.Refresh(ToolGunState.Get(ev.Player));
+	}
+
+	public override void OnScp914ProcessingInventoryItem(Scp914ProcessingInventoryItemEventArgs ev)
+	{
+		// The firearm upgrade removes the item and adds a new, loaded firearm that is no tool gun.
+		if (ev.Item.IsToolGun(out ToolGunItem _))
+			ev.IsAllowed = false;
 	}
 
 	public override void OnPlayerLeft(PlayerLeftEventArgs ev)

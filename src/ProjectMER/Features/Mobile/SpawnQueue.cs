@@ -27,9 +27,10 @@ namespace ProjectMER.Features.Mobile;
 /// frame.
 /// </para>
 /// <para>
-/// Destroys of spawned objects go through the same coroutine (four times the spawn limit per frame). After a toy has
-/// been spawned and its server <c>Start</c> has built the primitive, its component is disabled so it no longer costs a
-/// <c>LateUpdate</c>/<c>Update</c> call (§3.4). The coroutine only runs while there is work.
+/// Destroys of spawned objects go through the same coroutine (four times the spawn limit per frame; doors are destroyed at
+/// once, see <see cref="MerWaypoints.Count"/>). An object whose destroy was requested is no longer shown to anyone. After a
+/// toy has been spawned and its server <c>Start</c> has built the primitive, its component is disabled so it no longer
+/// costs a <c>LateUpdate</c>/<c>Update</c> call (§3.4). The coroutine only runs while there is work.
 /// </para>
 /// </remarks>
 public static class SpawnQueue
@@ -163,7 +164,7 @@ public static class SpawnQueue
 	}
 
 	/// <summary>
-	/// Destroys a MER object: queued objects are dropped, spawned ones are destroyed in batches.
+	/// Destroys a MER object: queued objects are dropped, spawned ones are destroyed in batches (doors at once).
 	/// </summary>
 	/// <param name="gameObject">The object.</param>
 	public static void Destroy(GameObject gameObject)
@@ -182,12 +183,28 @@ public static class SpawnQueue
 			Budget.Unregister(link);
 		}
 
+		// Players who join or enter its zone before the batched destroy must not receive it any more.
+		if (gameObject.TryGetComponent(out VisibilityEntry entry))
+			MerVisibility.Unregister(entry);
+
+		bool door = gameObject.TryGetComponent(out RelativePositioning.NetIdWaypoint waypoint);
 		if (gameObject.TryGetComponent(out NetworkIdentity identity) && identity.netId != 0 && NetworkServer.spawned.ContainsKey(identity.netId))
 		{
+			// A door goes at once: a reload's new doors must never be numbered alongside the old ones, which could exceed
+			// the 223 door waypoints the game can number (MerWaypoints.Count no longer counts doors being destroyed).
+			if (door)
+			{
+				MerVisibility.Destroy(gameObject);
+				return;
+			}
+
 			Destroys.Add(gameObject);
 			EnsureRunning();
 			return;
 		}
+
+		if (door)
+			MerWaypoints.OnDestroyingUnspawned(waypoint);
 
 		UnityEngine.Object.Destroy(gameObject);
 	}

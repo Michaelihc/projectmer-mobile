@@ -353,7 +353,8 @@ public sealed class SchematicBuildPlan
 /// primitives without collider, zero scale, unsupported types). They stay server-side anchors, which plugins find through
 /// <c>AttachedBlocks</c>.</item>
 /// <item>At most <c>max_lights_per_schematic</c> lights, strongest (intensity × range) first.</item>
-/// <item>With <c>merge_blocks</c>: exact duplicates of static primitives are removed.</item>
+/// <item>With <c>merge_blocks</c>: exact duplicates of static opaque (or fully invisible) primitives are removed; stacked
+/// translucent copies blend into a deeper tint, so they stay.</item>
 /// <item>With <c>merge_blocks</c>: static opaque (or fully invisible) cubes that share a full face, and coplanar quads
 /// facing the same way that share a full edge, are merged greedily per group of equal rotation (up to the cube's or
 /// quad's symmetries), colour, flags and transparency. The merged block covers exactly the union of its sources.</item>
@@ -724,6 +725,12 @@ public static class SchematicOptimizer
 				continue;
 
 			ref BlockInfo block = ref info[i];
+
+			// Stacked translucent copies blend once each (a deeper tint); dropping one would lighten the block.
+			float alpha = block.ColorParsed ? block.Color.a : 1f;
+			if ((plan.Flags[i] & PrimitiveFlags.Visible) != 0 && alpha > 0f && alpha < 1f)
+				continue;
+
 			Mat3 m = block.Matrix;
 			long[] values =
 			[

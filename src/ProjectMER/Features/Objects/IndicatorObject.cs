@@ -97,6 +97,9 @@ public class IndicatorObject : MapEditorObject
 			indicator = indicatorDefinition.SpawnOrUpdateIndicator(mapEditorObject.Room).AddComponent<IndicatorObject>();
 			BoxCollider collider = indicator.gameObject.AddComponent<BoxCollider>();
 			collider.isTrigger = true;
+
+			// The selection trigger stays out of the game's own queries (bullets, line of sight), like the editing triggers.
+			indicator.gameObject.layer = EditingColliders.Layer;
 			Dictionary.Add(indicator, mapEditorObject);
 			ByObject[mapEditorObject] = indicator;
 		}

@@ -16,9 +16,17 @@ namespace ProjectMER.Features.ToolGun;
 /// A primitive without <c>Collidable</c> has no collider on the server either (its <c>Scale</c> SyncVar has no positive
 /// component), so the tool gun's raycast would pass through it. While at least one owner holds a reference (every
 /// existing tool gun does; <c>Acquire</c>/<c>Release</c> are public so indicators can do the same), each such primitive
-/// of a loaded map or schematic gets a <see cref="BoxCollider"/> trigger sized to its mesh on its server-side primitive
-/// object. Clients never see it. The triggers are removed when the last owner releases, so they never affect hit
-/// registration or physics outside editing.
+/// of a loaded map or schematic gets a <see cref="BoxCollider"/> trigger sized to its mesh, on a child of its server-side
+/// primitive object. Clients never see it. The triggers are removed when the last owner releases.
+/// </para>
+/// <para>
+/// The triggers live on <see cref="Layer"/>, Unity's "Ignore Raycast" layer. Raycasts without a mask leave it out, and of
+/// the game's own layer masks only the tesla gate's player overlap includes it (it looks for players, so the triggers
+/// change nothing there). On the Default layer they would stop the server's own queries while anyone edits (Carl Mod
+/// keeps <c>Physics.queriesHitTriggers</c> on): bullets (<c>StandardHitregBase.HitregMask</c>), line-of-sight and
+/// explosion linecasts and SCP-049's corpse ray would stop at see-through decor. An unnamed layer would not do either:
+/// raycasts without a mask hit every layer but this one, and the game's pooled objects use some unnamed layers. Only the
+/// tool gun's ray (<see cref="ToolGunHandler.Raycast(Vector3, Vector3, out RaycastHit)"/>) adds the layer to its mask.
 /// </para>
 /// <para>
 /// New objects are picked up by a rescan every <see cref="RescanInterval"/> seconds (and soon after a tool-gun create).
@@ -32,6 +40,11 @@ public static class EditingColliders
 	/// Seconds between rescans while editing is active.
 	/// </summary>
 	public const float RescanInterval = 2f;
+
+	/// <summary>
+	/// The physics layer of the editing triggers and of indicator triggers: Unity's built-in "Ignore Raycast" layer.
+	/// </summary>
+	public const int Layer = 2;
 
 	private const float MinThickness = 0.05f;
 
@@ -113,7 +126,7 @@ public static class EditingColliders
 		foreach (BoxCollider collider in Added)
 		{
 			if (collider != null)
-				Object.Destroy(collider);
+				Object.Destroy(collider.gameObject);
 		}
 
 		Added.Clear();
@@ -234,7 +247,10 @@ public static class EditingColliders
 		size.y = Mathf.Max(size.y, MinThickness / Mathf.Max(Mathf.Abs(lossy.y), 0.0001f));
 		size.z = Mathf.Max(size.z, MinThickness / Mathf.Max(Mathf.Abs(lossy.z), 0.0001f));
 
-		BoxCollider collider = shape.AddComponent<BoxCollider>();
+		// A child, so the trigger has its own layer and leaves the primitive object untouched.
+		GameObject holder = new("MER editing trigger") { layer = Layer };
+		holder.transform.SetParent(shape.transform, false);
+		BoxCollider collider = holder.AddComponent<BoxCollider>();
 		collider.isTrigger = true;
 		collider.center = center;
 		collider.size = size;

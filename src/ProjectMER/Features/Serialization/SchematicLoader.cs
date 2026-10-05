@@ -42,6 +42,13 @@ public static class SchematicLoader
 	/// <returns>Whether the JSON file exists.</returns>
 	public static bool TryResolve(string schematicName, out string directory, out string jsonPath, out string error)
 	{
+		// A name with folders could reach (and move) any JSON file on the server.
+		if (!MapUtils.IsValidName(schematicName, out error))
+		{
+			directory = jsonPath = string.Empty;
+			return false;
+		}
+
 		directory = Path.Combine(ProjectMER.SchematicsDir, schematicName);
 		jsonPath = Path.Combine(directory, $"{schematicName}.json");
 		string misplaced = directory + ".json";

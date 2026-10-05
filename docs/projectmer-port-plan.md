@@ -186,7 +186,7 @@ How the port finds them:
 | Drop = next type, Reload = previous type | adapted | Mobile throw-away and reload buttons. The cycle is every schematic, then the supported types; ProjectMER's enum arithmetic breaks once types are removed. |
 | Schematic choice via SSS dropdown | replaced | `mp tg schematic`, or reload/drop through the schematics; the name is shown in the HUD (§4). |
 | HUD hint every 0.1 s (`ToolGunUI.GetHintHUD`) | adapted | A compact HUD sent at once when its contents change, within the client's limit of 10 hints per 5 s (at most 8 per 5 s), with a keep-alive every 2 s. It drops the 36 padding lines and the `LiberationSans SDF` font tag (§4). |
-| Indicators for invisible objects | adapted | Per-player visible, non-colliding (§3.3) and server-trigger selectable, as in ProjectMER (`IndicatorObject.TrySpawnOrUpdateIndicator` adds a trigger `BoxCollider`). Indicator roots with `PrimitiveFlags.None` become server-only anchors. Networked parts exist only while someone views indicators; roots and their triggers are also created for objects made or edited while nobody does, as in ProjectMER, so they stay selectable. |
+| Indicators for invisible objects | adapted | Per-player visible, non-colliding (§3.3) and server-trigger selectable, as in ProjectMER (`IndicatorObject.TrySpawnOrUpdateIndicator` adds a trigger `BoxCollider`, here on the Ignore Raycast layer like the editing triggers, §4). Indicator roots with `PrimitiveFlags.None` become server-only anchors. Networked parts exist only while someone views indicators; roots and their triggers are also created for objects made or edited while nobody does, as in ProjectMER, so they stay selectable. |
 | AutoSelect after create | as-is | |
 
 ### 1.6 Events
@@ -196,14 +196,14 @@ How the port finds them:
 | `Schematic.SchematicSpawning` (cancellable, `Data` replaceable), `SchematicSpawned`, `SchematicDestroyed`, `ButtonInteracted` | adapted | `SchematicSpawning` is raised before the build with a copy of the data: during the spawn call when the file is cached, otherwise once the worker has parsed it (cancelling then destroys the root returned earlier). `SchematicSpawned` (with the new `SchematicObject.IsSpawned`) is raised when every server object exists, a few frames after the spawn call (§3.5). A new `SchematicBuilt` event and `SchematicObject.IsBuilt` signal that the batched network spawn has finished. `SchematicDestroyed` is raised only for schematics that raised `SchematicSpawned`. |
 | `GenericEventsHandler` (prefab registration, player spawnpoints, shooting-target guard) | as-is | Depends on LabAPI `ServerWaitingForPlayers`, `PlayerSpawning` and `PlayerInteractingShootingTarget`. |
 | `PickupEventsHandler` (button pickups, `NumberOfUses`) | adapted | Firearm refill uses `FirearmStatus`. Depends on `PlayerSearchingPickup`, `PlayerPickingUpItem` and `PlayerPickingUpAmmo`. |
-| `ToolGunEventsHandler` | adapted | Uses `PlayerDryFiringWeapon`, `PlayerReloadingWeapon`, `PlayerUnloadingWeapon`, `PlayerDroppingItem`, `PlayerInspectingItem` and `PlayerTogglingWeaponFlashlight` (raised by the port from `FirearmBasicMessagesHandler.ServerRequestReceived` and `Inventory.CmdDropItem`), plus `PlayerChangedItem`, `PlayerLeft`, `ServerWaitingForPlayers` and `ServerRoundRestarted`. Aim is read from `AdsModule.ServerAds` (`AimingWeapon` does not exist; `AimedWeapon` is not subscribed). Tool guns leaving an inventory are caught by the fork's `InventoryExtensions.OnItemRemoved`. |
+| `ToolGunEventsHandler` | adapted | Uses `PlayerDryFiringWeapon`, `PlayerReloadingWeapon`, `PlayerUnloadingWeapon`, `PlayerDroppingItem`, `PlayerInspectingItem` and `PlayerTogglingWeaponFlashlight` (raised by the port from `FirearmBasicMessagesHandler.ServerRequestReceived` and `Inventory.CmdDropItem`), plus `PlayerChangedItem`, `PlayerLeft`, `ServerRoundRestarted` and `Scp914ProcessingInventoryItem` (SCP-914 leaves a tool gun unchanged). Aim is read from `AdsModule.ServerAds` (`AimingWeapon` does not exist; `AimedWeapon` is not subscribed). Tool guns leaving an inventory are caught by the fork's `InventoryExtensions.OnItemRemoved`; their pickup is locked (so escaping does not hand the same serial back as a plain FSP-9) and destroyed. |
 | `ActionOnEventHandlers` | as-is | Waiting-for-players, round started, LCZ decontamination started, and warhead started/stopped/detonated. The unload path calls `HandleMapLoading` for split arguments; the port calls `HandleMapUnloading`. |
 
 ### 1.7 Config options
 
 | Option | Status |
 |---|---|
-| `EnableFileSystemWatcher` | adapted. `FileSystemWatcher.Changed` runs on a thread-pool thread, but ProjectMER calls `Timing.CallDelayed` from it (`PMER/ProjectMER.cs: OnMapFileChanged`). The port enqueues the map name to a main-thread queue that an MEC coroutine drains. |
+| `EnableFileSystemWatcher` | adapted. `FileSystemWatcher.Changed` runs on a thread-pool thread, but ProjectMER calls `Timing.CallDelayed` from it (`PMER/ProjectMER.cs: OnMapFileChanged`). The port enqueues the map name to a main-thread queue that an MEC coroutine drains. A map whose file is unchanged since the server last read it is not reloaded again (`mp save` writes the file and loads the map itself). |
 | `AutoSelect` | as-is |
 | `OnWaitingForPlayers`, `OnRoundStarted`, `OnLczDecontaminationStarted`, `OnWarheadStarted/Stopped/Detonated` | as-is |
 | New mobile options | `static_by_default: true`, `honor_static_property: false` (§3.2), `spawn_max_per_frame: 10`, `spawn_time_budget_ms: 3`, `dynamic_toy_sync_interval: 0.1`, `allow_light_shadows: false`, `light_intensity_scale: 0.025` (§3.6), `max_lights: 16`, `primitive_warn_per_schematic: 300`, `networked_warn_total: 1500`, `networked_hard_cap: 4000`, `invisible_collider_mode: Transparent` (`Transparent`/`Skip`), `optimize_schematics: true`, `merge_blocks: Maps` (`None`/`Maps`/`All`, §3.9), `max_lights_per_schematic: 4` (`-1` = no per-schematic cap), `managed_visibility: true`, `zone_culling: SurfaceFacility` (`None`/`SurfaceFacility`/`PerZone`; read at each round reset), `zone_culling_min_objects: 150`, `hud_interval: 0.5`, `warhead_spares_outside_rooms: true` (§1.8), `log_spawn_stats: true` (one throughput line per spawn-queue drain). `spawn_max_per_frame` and `light_intensity_scale` were set from the Android measurements in §5.3; the other values were confirmed there (a real-device pass is still open). |
@@ -376,10 +376,14 @@ and structures.
   in its `LateUpdate`, only for anchors whose `transform.hasChanged` is set. It uses `lossyScale`,
   which avoids MER 13.2's root-scale approximation (`MER132/Patches/UpdatePositionServerPatch.cs`) and
   any Harmony patch on `AdminToyBase`. Set `syncInterval = dynamic_toy_sync_interval` on those toys.
-  Add a kinematic `Rigidbody` server-side to moving collidable toys so PhysX does not rebuild static
-  colliders. A rigidbody entry goes on the toy itself (it has the collider), whose own `LateUpdate`
-  syncs it; `SchematicSync` then moves the block's anchor from the toy so the children follow. Rigidbody
-  entries of pickups go on the pickup's own body, and entries of empties on their anchor.
+  Add a kinematic `Rigidbody` server-side to moving collidable toys of animated subtrees so PhysX does
+  not rebuild static colliders. A rigidbody entry goes on the block's anchor, and every collidable
+  primitive of its subtree gets a copy of its collider (the same convex mesh; a thin box for planes and
+  quads) on its own anchor: the anchors below the body make its compound collider, as the parented toys
+  did in ProjectMER. The toys of the subtree follow their anchors with their server colliders switched off
+  (`SchematicSync` checks every frame, because the server builds a toy's primitive in `Start` and again
+  when the spawn reaches its host client), and the body stays kinematic until those toys are spawned, so it
+  never overlaps colliders of its own toys. Rigidbody entries of pickups go on the pickup's own body.
 
 ### 3.3 Collider and visibility encoding
 
@@ -415,8 +419,8 @@ Why this works:
   SyncVar, so server physics (bullets, pickups, tool-gun raycasts) behaves the same as the client.
 - **Non-collidable objects still need to be selectable** by the tool gun. While a tool gun exists (or
   another owner, such as the indicator toggle, holds `EditingColliders`), the editor adds a server-only
-  trigger `BoxCollider` to the server-side primitive of every non-collidable MER primitive. It is removed
-  when editing stops, so it never affects hit registration during play (§4).
+  trigger `BoxCollider` to the server-side primitive of every non-collidable MER primitive, on the Ignore
+  Raycast layer, which the game's own queries leave out (§4). It is removed when editing stops.
 - **Invisible colliders are not cheap.** A transparent primitive still renders, with blending and
   overdraw that matter on tile GPUs. The port warns when a load has more than 50 transparent
   primitives.
@@ -594,7 +598,8 @@ zone, audience, explicit per-player decisions); Mirror's `identity.observers` st
   of both. Hides are paced at four times the limit.
 - A player whose connection stops being ready is dropped from all streams and streamed again from scratch once ready.
   A disconnect drops its pending work, its audience memberships and its explicit decisions.
-- Round restart and waiting for players clear all state.
+- Round restart clears all state. Waiting for players does not: plugins handling that event before ProjectMER may
+  already have spawned MER content for the new round.
 
 **Admin-only objects** (indicators, selection box, grab proxy) are spawned with `adminOnly: true`. A
 `VisibilityAudience` (a set of players) shows its objects to its members only; `MerVisibility.ShowTo(identity,
@@ -632,8 +637,8 @@ Indicators use one audience: the players who turned them on (§1.4).
   elevators). With `PerZone`, the `HczCheckpointToEntranceZone` room shows HCZ and EZ. The stream of a newly visible
   zone is ordered around the player, the elevator floor or the teleport destination in that zone.
 - A zone stays visible for 5 s after the first poll that no longer needs it, so 5 to 6 s after the player left it.
-- MER teleports call `MerVisibility.Prefetch` before moving the player: the destination zone is added and its nearest
-  objects (one `spawn_max_per_frame` batch) are sent at once; the rest is streamed.
+- MER teleports and MER player spawnpoints call `MerVisibility.Prefetch` before moving the player: the destination
+  zone is added and its nearest objects (one `spawn_max_per_frame` batch) are sent at once; the rest is streamed.
 
 **Cost of a transition** (one player changes zone, group of N primitives):
 
@@ -721,7 +726,8 @@ file or the configuration changes. Source files are never rewritten.
 4. **Light cap.** At most `max_lights_per_schematic` (4; `-1` = no cap) lights per schematic, strongest
    `intensity × range` first, file order on ties. `max_lights` still applies to everything loaded.
 5. **Drop exact duplicates** (with merging, below): static primitives whose type, root-space matrix and
-   position (quantized to 1e-4), colour and networked flags equal an earlier block's.
+   position (quantized to 1e-4), colour and networked flags equal an earlier block's. Partly transparent
+   duplicates stay: stacked translucent copies blend into a deeper tint.
 6. **Merge cubes and quads** (`merge_blocks`: `Maps` by default, i.e. schematics whose spawn group has a
    map, as for map files, `mp create` and the tool gun; `All` adds schematics spawned by plugins through
    the API; `None`). Plugins that address single blocks of their own schematics keep every block under
@@ -900,17 +906,24 @@ handler already processes are used (`FirearmBasicMessagesHandler.ServerRequestRe
 **Selecting non-collidable objects** (`EditingColliders.cs`, §3.3).
 
 - While any tool gun exists, every non-collidable primitive of a loaded map or schematic gets a
-  server-only trigger `BoxCollider` on its server-side primitive object, sized to the mesh (planes and
-  quads get 5 cm of thickness). They are removed with the last tool gun. `EditingColliders.Acquire(owner)`
-  and `Release(owner)` are public, so the indicator toggle can keep them as well.
+  server-only trigger `BoxCollider` on a child of its server-side primitive object, sized to the mesh
+  (planes and quads get 5 cm of thickness). They are removed with the last tool gun.
+  `EditingColliders.Acquire(owner)` and `Release(owner)` are public, so the indicator toggle can keep them
+  as well.
+- The triggers (and the indicator roots' triggers) are on Unity's Ignore Raycast layer. Raycasts without a
+  mask leave it out, and of the game's layer masks only the tesla gate's player overlap includes it. On the
+  Default layer, with `Physics.queriesHitTriggers = true`, they would stop bullets
+  (`StandardHitregBase.HitregMask`), line-of-sight and explosion linecasts and SCP-049's corpse ray at
+  see-through decor while anyone edits. Unnamed layers are no alternative: raycasts without a mask hit
+  them, and pooled game objects use some of them.
 - New objects are picked up by a rescan every 2 s and right after a tool-gun create. Handled primitives are
   skipped by instance id, and built schematics whose primitives all existed at an earlier scan are skipped
   whole. Measured with Skeld loaded (2542 networked blocks): the first scan took 2.05 ms over 2543 toys and
   added 197 triggers; later scans took 0.014 ms.
 - The tool gun ray takes the nearest solid hit (`QueryTriggerInteraction.Ignore`), or a nearer trigger
-  that belongs to MER (editing triggers, indicator roots, teleports). Other game triggers on the
-  Default/Door/CCTV layers are ignored. This server has `Physics.queriesHitTriggers = true`, so
-  ProjectMER's plain raycast stopped at any trigger.
+  that belongs to MER (editing triggers, indicator roots, teleports; the trigger pass adds the Ignore
+  Raycast layer). Other game triggers on the Default/Door/CCTV layers are ignored. This server has
+  `Physics.queriesHitTriggers = true`, so ProjectMER's plain raycast stopped at any trigger.
 
 **Precise edits** use Remote Admin and console commands, both available on mobile:
 
@@ -1238,7 +1251,7 @@ configurations, not phones.
 | The `Scale`-sign encoding depends on `SetPrimitive` reading the `Scale` SyncVar before `Start`. Initial deserialization sets `Scale` in `AdminToyBase.DeserializeSyncVars` before the derived `PrimitiveType` hook runs. | Covered by the flag fixtures on Android. |
 | Animator AssetBundles built for another Unity version may fail to load on Unity 6000.3 servers. | Log and fall back to a static schematic. |
 | Draw-call and spawn budgets are estimates until measured. The emulator is not representative. | Set from the emulator measurements (§5.3); a real-device pass is still open. |
-| MER doors change the door waypoint numbering that player and pickup positions rely on. | `MerWaypoints` keeps the server's numbering equal to the clients' (§5.3, docs/compatibility.md); at most 224 door waypoints. |
+| MER doors change the door waypoint numbering that player and pickup positions rely on. | `MerWaypoints` keeps the server's numbering equal to the clients' (§5.3, docs/compatibility.md); at most 223 door waypoints (ids 32 to 254). |
 | ProjectMER light intensities are HDRP values; the fork renders with the built-in pipeline. | `light_intensity_scale` (§3.6). |
 | Removing Triangle/Quad-built content (ProjectMER's triangle exporter) leaves holes in schematics that use it. | Warning with counts. Quads (`ToolGunObjectType.Quad` = primitive Quad) remain supported. |
 | Third-party plugins that read `SchematicObject.GetComponent<PrimitiveObjectToy>()` on the root, or expect blocks to be children of the root, break. | Documented in `docs/compatibility.md`. `AttachedBlocks`/`AdminToyBases` still return the blocks. |

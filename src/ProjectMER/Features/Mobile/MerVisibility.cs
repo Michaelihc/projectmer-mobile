@@ -53,8 +53,8 @@ namespace ProjectMER.Features.Mobile;
 /// elevator whose floors are in different zones see every zone it serves (prefetch); a zone stays visible for 5 s after
 /// it was last needed (hysteresis). Spectators and Overwatch follow the zone of the player they spectate, SCP-079 the
 /// zone of its camera, and both only ever add zones until the player spawns again.</item>
-/// <item><b>Teleports.</b> <see cref="Prefetch"/> shows the destination zone before a player is moved, its nearest
-/// collidable objects at once.</item>
+/// <item><b>Teleports.</b> <see cref="Prefetch"/> shows the destination zone before a player is moved (MER teleports and
+/// player spawnpoints), its nearest collidable objects at once.</item>
 /// </list>
 /// <para>
 /// Hysteresis, prefetch and add-only spectators bound the churn: every hide costs the phone a client-side destroy that
@@ -654,8 +654,8 @@ public static class MerVisibility
 	}
 
 	/// <summary>
-	/// Clears per-round state. Called on round restart and when waiting for players; also subscribes to the player events
-	/// (<see cref="Start"/>) so players who join before the first MER object spawns are tracked.
+	/// Clears per-round state. Called on round restart; also subscribes to the player events (<see cref="Start"/>) so
+	/// players who join before the first MER object spawns are tracked.
 	/// </summary>
 	public static void Reset()
 	{
@@ -904,23 +904,27 @@ public static class MerVisibility
 		if (root == null || entry.IsWaypoint)
 			zone = -1;
 
-		if (ReferenceEquals(entry.Root, root) && entry.Zone == zone)
+		if (ReferenceEquals(entry.Root, root))
+		{
+			// The same group in another zone (the object moved): only its cell changes. Leaving the group, even briefly, would
+			// drop a group of one from Roots, and nothing would settle it or stream it to players entering its zone.
+			if (root != null && entry.Zone != zone)
+			{
+				TakeOutOfZone(entry, root);
+				PutInZone(entry, root, zone);
+			}
+
 			return;
+		}
 
 		RemoveFromCell(entry);
 		if (root == null)
 			return;
 
 		entry.Root = root;
-		entry.Zone = zone;
 		root.Count++;
 		root.LastAdded = Time.unscaledTime;
-		if (zone >= 0)
-		{
-			List<VisibilityEntry> cell = root.Cells[zone] ??= [];
-			entry.CellIndex = cell.Count;
-			cell.Add(entry);
-		}
+		PutInZone(entry, root, zone);
 
 		// A settled small group that grows (tool gun) becomes culled; this is the only case that hides shown objects.
 		if (root.Settled && !root.Active && root.Count >= Config!.ZoneCullingMinObjects)
@@ -933,6 +937,27 @@ public static class MerVisibility
 		if (root == null)
 			return;
 
+		TakeOutOfZone(entry, root);
+		entry.Root = null;
+		root.Count--;
+		if (root.Count <= 0 && Roots.TryGetValue(root.Group, out VisibilityRoot current) && ReferenceEquals(current, root))
+			Roots.Remove(root.Group);
+	}
+
+	private static void PutInZone(VisibilityEntry entry, VisibilityRoot root, int zone)
+	{
+		entry.Zone = zone;
+		entry.CellIndex = -1;
+		if (zone < 0)
+			return;
+
+		List<VisibilityEntry> cell = root.Cells[zone] ??= [];
+		entry.CellIndex = cell.Count;
+		cell.Add(entry);
+	}
+
+	private static void TakeOutOfZone(VisibilityEntry entry, VisibilityRoot root)
+	{
 		int zone = entry.Zone;
 		int index = entry.CellIndex;
 		List<VisibilityEntry>? cell = zone >= 0 ? root.Cells[zone] : null;
@@ -945,12 +970,8 @@ public static class MerVisibility
 			cell.RemoveAt(last);
 		}
 
-		entry.Root = null;
 		entry.Zone = -1;
 		entry.CellIndex = -1;
-		root.Count--;
-		if (root.Count <= 0 && Roots.TryGetValue(root.Group, out VisibilityRoot current) && ReferenceEquals(current, root))
-			Roots.Remove(root.Group);
 	}
 
 	private static VisibilityRoot GetOrCreateRoot(SpawnGroup top, VisibilityEntry first)

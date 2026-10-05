@@ -32,7 +32,7 @@ mobile client. Run `mp` alone for the list.
 | --- | --- | --- |
 | `load <map>` | `l` | Loads a map. Loading a loaded map reloads it. |
 | `unload [map]` | `unl` | Unloads a map, or every map. |
-| `save <map>` | `s` | Saves the loaded map, including objects created since (the `Untitled` map). |
+| `save <map>` | `s` | Saves the loaded map, including objects created since (the `Untitled` map). A map file that exists but cannot be read is left untouched and the save fails. |
 | `list` | `li`, `ls` | Lists maps and schematics (numbered, for `mp tg schematic`). |
 | `merge <new> <map> <map>...` | | Merges maps into a new one. |
 | `create <type\|schematic> [x y z]` | `cr`, `spawn` | Creates an object where you look, or at a position. |
@@ -45,7 +45,9 @@ mobile client. Run `mp` alone for the list.
 | `optimize <schematic> [map\|api]` | `opt` | What the schematic optimizer does to a schematic: networked objects and spawn bytes after each step. |
 | `prefabs` | `pf` | Lists the network prefabs. |
 
-`stats`, `optimize` and `prefabs` also write their report to the server log.
+`stats`, `optimize` and `prefabs` also write their report to the server log. Map and schematic names are plain file
+names in the `Maps` and `Schematics` folders: names with folders (`/`, `\`, `..`), a drive or other characters that are
+invalid in file names are refused.
 
 **Tool gun on mobile.** The tool gun is an FSP-9 with an empty magazine (the Carl Mod client never dry-fires an empty
 semi-automatic gun such as ProjectMER's COM-18). The touch buttons map as follows:
@@ -57,6 +59,9 @@ semi-automatic gun such as ProjectMER's COM-18). The touch buttons map as follow
 | Light toggle (the ((•)) icon) | Switch create/delete; the flashlight is on in create mode. |
 | 检视 (inspect) | The same switch, but the client also plays the inspect animation for about 3 s. |
 | R (reload) and the throw-away arrow | Previous and next entry of the cycle: every schematic, then the object types. |
+
+The tool gun never becomes an ordinary gun: when it leaves the inventory other than through `mp tg` (death, cuffing,
+escaping) it is destroyed, and SCP-914 leaves it unchanged.
 
 The HUD below the crosshair shows the mode and type (or the object under the crosshair), the selection, a grab and the
 room. Carl Mod has no server-specific settings, so the schematic to create is chosen with
@@ -73,7 +78,8 @@ editing command shows its effect in the world and in the tool gun HUD.
 ProjectMER's own options are unchanged: `enable_file_system_watcher`, `auto_select`, and the map actions
 `on_waiting_for_players`, `on_round_started`, `on_lcz_decontamination_started`, `on_warhead_started`,
 `on_warhead_stopped`, `on_warhead_detonated` (`load:<map>`, `unload:<map>`, `console:<command>`; see the comments in
-`config.yml`).
+`config.yml`). With the watcher, a loaded map is reloaded when its file changes on disk; the server's own `mp save`,
+which loads the map again itself, does not cause a second reload.
 
 Mobile options:
 
@@ -119,8 +125,9 @@ Mobile options:
   become point lights, and intensities are scaled by `light_intensity_scale`. Shadowless lights cost little (8 or 16
   lights stayed within the run-to-run spread); 8 shadowed lights cost about 20% of the frame rate.
 - **Schematic optimizer.** Blocks that produce nothing on the client stay server-side anchors. With `merge_blocks`,
-  exact duplicates are removed, opaque cubes that share a whole face and coplanar quads facing the same way that
-  share a whole edge are merged; merged blocks cover exactly the space of the blocks they replace. Run
+  exact duplicates are removed (not partly transparent ones, which blend into a deeper tint), and opaque cubes that
+  share a whole face and coplanar quads facing the same way that share a whole edge are merged; merged blocks cover
+  exactly the space of the blocks they replace. Run
   `mp optimize <schematic>` for the numbers. Typical event schematics network 10-16% fewer objects than in ProjectMER
   (Skeld 2923 → 2447, Shipment 1130 → 970); merging contributes up to 5 points of that.
 - **Loading.** Schematic files are parsed and planned on a worker thread, and blocks are built and networked over the
@@ -132,7 +139,8 @@ Mobile options:
   reason.
 - **Doors.** MER doors carry the waypoints that player, ragdoll and pickup positions are sent relative to. The port
   keeps their numbering in step with the clients (docs/compatibility.md); a map can add doors until the facility has
-  224 (about 128 MER doors on top of a generated facility).
+  223 (about 125 MER doors on top of a generated facility). Doors of a load that still wait to spawn count towards that;
+  doors being unloaded do not.
 
 ### For plugin developers
 
@@ -149,3 +157,7 @@ The API is ProjectMER's, with these differences:
   each networked object has a `MerBlockLink` pointing back to its schematic and block id.
 - Merged and duplicate blocks (see `merge_blocks`) keep only their anchor (name, transform), without a toy of their
   own. Setting `IsStatic = false` networks them individually again before the blocks become dynamic.
+- A schematic whose block data cannot be used (for example a pickup `Chance` that is not a number) is destroyed with an
+  error while it builds; `ObjectSpawner.SpawnSchematic` has already returned it.
+- ProjectMER resets its round state (loaded maps, the spawn queue, visibility) when the round restarts, not at
+  `WaitingForPlayers`, so MER content spawned from any plugin's `WaitingForPlayers` handler is kept.

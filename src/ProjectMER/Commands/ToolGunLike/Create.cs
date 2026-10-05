@@ -82,7 +82,8 @@ public class Create : ICommand
 
 		string objectName = arguments.At(0);
 
-		if (Enum.TryParse(objectName, true, out ToolGunObjectType parsedEnum) && Enum.IsDefined(typeof(ToolGunObjectType), parsedEnum))
+		// "schematic" (or 0) alone names no schematic: such a name is looked up as a schematic file below.
+		if (Enum.TryParse(objectName, true, out ToolGunObjectType parsedEnum) && Enum.IsDefined(typeof(ToolGunObjectType), parsedEnum) && parsedEnum != ToolGunObjectType.Schematic)
 		{
 			string? reason = ToolGunItem.GetUnsupportedReason(parsedEnum);
 			if (reason != null)

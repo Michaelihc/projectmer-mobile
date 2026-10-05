@@ -26,7 +26,16 @@ public class Save : ICommand
 			return false;
 		}
 
-		MapUtils.SaveMap(arguments.At(0));
+		try
+		{
+			MapUtils.SaveMap(arguments.At(0));
+		}
+		catch (Exception e)
+		{
+			// An invalid name, or an existing map file that cannot be read (it is left untouched).
+			response = $"Map {arguments.At(0)} was not saved: {e.Message}";
+			return false;
+		}
 
 		response = $"Map named {arguments.At(0)} has been successfully saved!";
 		return true;

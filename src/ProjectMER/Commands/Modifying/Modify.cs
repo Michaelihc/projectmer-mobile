@@ -129,15 +129,34 @@ public class Modify : ICommand
 				return false;
 			}
 
+			if (!MapUtils.IsValidName(newMapName, out string invalid))
+			{
+				response = invalid;
+				return false;
+			}
+
 			MapSchematic oldMap = mapEditorObject.Map;
 			if (!MapUtils.LoadedMaps.TryGetValue(newMapName, out MapSchematic newMap)) // Map is already loaded
-				if (!MapUtils.TryGetMapData(newMapName, out newMap)) // Map isn't loaded but map file exists
-				{ // Map isn't loaded and map file doesn't exist
-
+			{
+				// Map isn't loaded: its file's objects (if it exists) or a new map. Either way the map is loaded from now on,
+				// as its objects are spawned below; ProjectMER left a map read from file out of LoadedMaps, orphaning them.
+				try
+				{
+					newMap = MapUtils.GetMapData(newMapName);
+				}
+				catch (FileNotFoundException)
+				{
 					newMap = new MapSchematic(newMapName);
-					MapUtils.LoadedMaps.Add(newMapName, newMap);
+				}
+				catch (Exception e)
+				{
+					// A later save would replace the unreadable file with this object alone.
+					response = e.Message;
+					return false;
 				}
 
+				MapUtils.LoadedMaps.Add(newMapName, newMap);
+			}
 
 			oldMap.TryRemoveElement(mapEditorObject.Id);
 			newMap.TryAddElement(mapEditorObject.Id, mapEditorObject.Base);

@@ -45,11 +45,12 @@ public class SerializableDoor : SerializableObject
 			if (!Budget.CanCreate())
 				return null;
 
-			// Door waypoint ids are bytes from 32: the game's renumbering throws at the 225th door, and positions near doors
-			// would then be decoded against the wrong door on clients.
-			if (MerWaypoints.Count >= MerWaypoints.MaxDoorWaypoints)
+			// Door waypoint ids run from 32 to 254: the game's renumbering throws at the 224th door, and positions near doors
+			// would then be decoded against the wrong door on clients. Doors of this load that still wait for their spawn count.
+			int doors = MerWaypoints.Count;
+			if (doors >= MerWaypoints.MaxDoorWaypoints)
 			{
-				UnsupportedContent.Skip("doors", $"the facility already has {MerWaypoints.Count} doors, the most Carl Mod's relative positioning can number");
+				UnsupportedContent.Skip("doors", $"the facility already has {doors} doors, the most Carl Mod's relative positioning can number");
 				return null;
 			}
 

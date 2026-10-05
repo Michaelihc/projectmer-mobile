@@ -33,34 +33,39 @@ public class Merge : ICommand
 			return false;
 		}
 
-		List<MapSchematic> maps = ListPool<MapSchematic>.Shared.Rent();
-
-		for (int i = 1; i < arguments.Count; i++)
+		string mapName = arguments.At(0);
+		if (!MapUtils.IsValidName(mapName, out string invalid))
 		{
-			MapSchematic map = MapUtils.GetMapData(arguments.At(i));
+			response = invalid;
+			return false;
+		}
 
-			if (map is null)
+		List<MapSchematic> maps = ListPool<MapSchematic>.Shared.Rent();
+		try
+		{
+			for (int i = 1; i < arguments.Count; i++)
 			{
-				response = $"Map named {arguments.At(i)} does not exist or is invalid!";
+				if (!MapUtils.TryGetMapData(arguments.At(i), out MapSchematic map))
+				{
+					response = $"Map named {arguments.At(i)} does not exist or is invalid!";
+					return false;
+				}
 
-				ListPool<MapSchematic>.Shared.Return(maps);
-				return false;
+				maps.Add(map);
 			}
 
-			maps.Add(map);
-		}
+			MapSchematic outputMap = new(mapName);
+			foreach (MapSchematic map in maps)
+			{
+				outputMap.Merge(map);
+			}
 
-		string mapName = arguments.At(0);
-		MapSchematic outputMap = new(mapName);
-		foreach (MapSchematic map in maps)
+			File.WriteAllText(MapUtils.GetMapPath(mapName), YamlParser.Serializer.Serialize(outputMap));
+		}
+		finally
 		{
-			outputMap.Merge(map);
+			ListPool<MapSchematic>.Shared.Return(maps);
 		}
-
-		ListPool<MapSchematic>.Shared.Return(maps);
-
-		string path = Path.Combine(ProjectMER.MapsDir, $"{mapName}.yml");
-		File.WriteAllText(path, YamlParser.Serializer.Serialize(outputMap));
 
 		response = $"You've successfully merged {arguments.Count - 1} maps into one!";
 		return true;

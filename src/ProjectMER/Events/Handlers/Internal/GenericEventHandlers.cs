@@ -5,23 +5,20 @@ using ProjectMER.Features;
 using ProjectMER.Features.Mobile;
 using ProjectMER.Features.Objects;
 using ProjectMER.Features.Serializable;
-using ProjectMER.Features.ToolGun;
 
 namespace ProjectMER.Events.Handlers.Internal;
 
 public class GenericEventsHandler : CustomEventsHandler
 {
-	public override void OnServerWaitingForPlayers()
-	{
-		PrefabManager.RegisterPrefabs();
-
-		ResetRoundState();
-		ToolGunItem.ItemDictionary.Clear();
-		ToolGunHandler.PlayerSelectedObjectDict.Clear();
-	}
+	/// <summary>
+	/// Registers the new scene's prefabs. Round state is not reset here: the round restart already did, and plugins whose
+	/// handlers run before this one may already have spawned MER content for the new round.
+	/// </summary>
+	public override void OnServerWaitingForPlayers() => PrefabManager.RegisterPrefabs();
 
 	/// <summary>
-	/// The scene change of a round restart destroys every MER object; drop everything that still refers to them.
+	/// The scene change of a round restart destroys every MER object; drop everything that still refers to them. Every
+	/// scene change of a server goes through the round restart (<c>RoundRestart.InitiateRoundRestart</c>).
 	/// </summary>
 	public override void OnServerRoundRestarted() => ResetRoundState();
 
@@ -47,6 +44,8 @@ public class GenericEventsHandler : CustomEventsHandler
 
 		MapEditorObject randomElement = list[UnityEngine.Random.Range(0, list.Count)];
 
+		// A teleport: show the zone of the spawnpoint (its MER floor first) before the player is moved there.
+		MerVisibility.Prefetch(ev.Player, randomElement.transform.position);
 		ev.SpawnLocation = randomElement.transform.position;
 		Timing.CallDelayed(0.05f, () =>
 		{

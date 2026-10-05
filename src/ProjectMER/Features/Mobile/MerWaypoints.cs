@@ -43,9 +43,15 @@ internal static class MerWaypoints
 	private const int FirstId = 32;
 
 	/// <summary>
-	/// Door waypoint ids are bytes and 0 is reserved: the game's renumbering throws when the 225th door would get id 0.
+	/// The most door waypoints the game can number: ids 32 to 254. The renumbering (<c>NetIdWaypoint.Update</c>) writes
+	/// <c>WaypointBase.WaypointIndexes[id]</c>, an array of 255 entries, so the 224th door (id 255) throws
+	/// <c>IndexOutOfRangeException</c>, on the server and on every client, in every frame from then on.
 	/// </summary>
-	public const int MaxDoorWaypoints = byte.MaxValue - FirstId + 1;
+	public const int MaxDoorWaypoints = byte.MaxValue - FirstId;
+
+	private static readonly HashSet<NetIdWaypoint> Held = [];
+
+	private static readonly HashSet<NetIdWaypoint> Leaving = [];
 
 	private static uint _destroyedMinNetId = uint.MaxValue;
 
@@ -62,18 +68,45 @@ internal static class MerWaypoints
 	public static int CompactingRespawns { get; private set; }
 
 	/// <summary>
-	/// Gets the number of door waypoints in the scene (vanilla and MER doors).
+	/// Gets the number of door waypoints the game will number once the spawn queue has drained: started waypoints (vanilla
+	/// and MER doors) plus MER doors still waiting to be spawned, without MER doors being destroyed.
 	/// </summary>
-	public static int Count => NetIdWaypoint.AllNetWaypoints.Count;
+	/// <remarks>
+	/// The game's set only holds waypoints whose <c>Start</c> has run, which a new MER door's waypoint does only after the
+	/// door was spawned (<see cref="HoldUntilSpawned"/>), possibly many frames later. A map load creates all of its doors in
+	/// one frame, so each of them must count while it waits.
+	/// </remarks>
+	public static int Count
+	{
+		get
+		{
+			// Held doors leave the set once destroyed or once their waypoint started (then the game's set has them); destroyed
+			// doors stay in the game's set until the end of the frame.
+			Held.RemoveWhere(static waypoint => waypoint == null || NetIdWaypoint.AllNetWaypoints.Contains(waypoint));
+			Leaving.RemoveWhere(static waypoint => waypoint == null);
+			int count = NetIdWaypoint.AllNetWaypoints.Count + Held.Count;
+			foreach (NetIdWaypoint waypoint in Leaving)
+			{
+				if (NetIdWaypoint.AllNetWaypoints.Contains(waypoint))
+					count--;
+			}
+
+			return count;
+		}
+	}
 
 	/// <summary>
 	/// Keeps the waypoint of a freshly instantiated door from starting until <see cref="OnSpawned"/>: Unity runs
 	/// <c>Start</c> only on enabled components, and a waypoint that starts with netId 0 is numbered ahead of every other door.
+	/// The door counts towards <see cref="Count"/> while it waits.
 	/// </summary>
 	public static void HoldUntilSpawned(GameObject gameObject)
 	{
-		if (gameObject.TryGetComponent(out NetIdWaypoint waypoint))
-			waypoint.enabled = false;
+		if (!gameObject.TryGetComponent(out NetIdWaypoint waypoint))
+			return;
+
+		waypoint.enabled = false;
+		Held.Add(waypoint);
 	}
 
 	/// <summary>
@@ -88,12 +121,21 @@ internal static class MerWaypoints
 	}
 
 	/// <summary>
+	/// Call before a door that was never spawned is destroyed: it no longer counts towards <see cref="Count"/>.
+	/// </summary>
+	public static void OnDestroyingUnspawned(NetIdWaypoint waypoint) => Held.Remove(waypoint);
+
+	/// <summary>
 	/// Call before a spawned object is destroyed for good.
 	/// </summary>
 	public static void OnDestroying(NetworkIdentity identity)
 	{
-		if (identity == null || identity.netId == 0 || !identity.TryGetComponent(out NetIdWaypoint _))
+		if (identity == null || identity.netId == 0 || !identity.TryGetComponent(out NetIdWaypoint waypoint))
 			return;
+
+		// Destroyed at the end of the frame; until then it must not count.
+		Held.Remove(waypoint);
+		Leaving.Add(waypoint);
 
 		if (identity.netId < _destroyedMinNetId)
 			_destroyedMinNetId = identity.netId;
@@ -110,6 +152,8 @@ internal static class MerWaypoints
 	/// </summary>
 	public static void Reset()
 	{
+		Held.Clear();
+		Leaving.Clear();
 		_destroyedMinNetId = uint.MaxValue;
 		_compactScheduled = false;
 	}

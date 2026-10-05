@@ -10,7 +10,8 @@ namespace ProjectMER.Features.Mobile;
 /// <see cref="FileSystemWatcher"/> raises <c>Changed</c> on a thread-pool thread, where ProjectMER called
 /// <c>Timing.CallDelayed</c> (not thread-safe) and reloaded maps. The watcher now only enqueues the map name; an MEC
 /// coroutine drains the queue on the main thread every quarter second. Repeated change notifications for the same map
-/// (editors often write a file twice) are merged.
+/// (editors often write a file twice) are merged, and a map whose file is unchanged since the server last read it (the
+/// server's own <c>mp save</c>, which loads the map itself) is not reloaded again.
 /// </remarks>
 public static class MainThreadQueue
 {
@@ -62,6 +63,11 @@ public static class MainThreadQueue
 
 				try
 				{
+					// The server's own save writes the file and loads the map itself; reloading again would destroy and
+					// stream the whole map a second time.
+					if (MapUtils.IsUnchangedSinceRead(mapName))
+						continue;
+
 					Logger.Info($"Map file {mapName}.yml changed; reloading it.");
 					MapUtils.LoadMap(mapName);
 				}

@@ -34,6 +34,8 @@ public static class ToyFactory
 	/// </summary>
 	public const byte DynamicMovementSmoothing = 60;
 
+	private static readonly List<Collider> ColliderBuffer = [];
+
 	private static Config Config => ProjectMER.Singleton.Config!;
 
 	/// <summary>
@@ -141,6 +143,21 @@ public static class ToyFactory
 			Resend(identity);
 
 		return true;
+	}
+
+	/// <summary>
+	/// Switches off the colliders of a primitive's server-side object (the toy builds it in <c>Start</c>).
+	/// </summary>
+	/// <param name="primitive">The toy's primitive object (<c>PrimitiveObjectToy._spawnedPrimitve</c>).</param>
+	internal static void DisableServerCollider(GameObject primitive)
+	{
+		// SetPrimitive replaces the default collider by a mesh collider; the default one is destroyed only at the end of the
+		// frame, so switch off every collider of the primitive object.
+		primitive.GetComponents(ColliderBuffer);
+		foreach (Collider collider in ColliderBuffer)
+			collider.enabled = false;
+
+		ColliderBuffer.Clear();
 	}
 
 	/// <summary>
