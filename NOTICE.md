@@ -15,9 +15,11 @@ ProjectMER-Mobile is a port of ProjectMER 2025.11.2.1 to the Carl Mod server on 
 
 ## Licence status
 
-- The upstream ProjectMER repository has no licence file.
+- The changes and additions in this repository (the Carl Mod port, by Michaelihc) are licensed under Creative Commons
+  Attribution-ShareAlike 3.0 Unported, in [LICENSE](LICENSE).
 - MapEditorReborn's source file headers state "Licensed under the CC BY-SA 3.0 license".
-- This repository adds no licence file of its own.
+- The upstream ProjectMER repository publishes no licence file. Code that comes from it remains the work of its
+  authors, and this repository grants no rights to that code beyond what they grant.
 
 ## Game
 

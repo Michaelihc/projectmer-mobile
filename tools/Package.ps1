@@ -5,7 +5,7 @@
 .DESCRIPTION
   The archive has one top folder, ProjectMER-Mobile-<version>\, containing:
     plugins\ProjectMER.dll, ProjectMER.pdb     copied by the server owner into LabAPI-Mobile\plugins\global
-    README.md, README.zh-CN.md, NOTICE.md      from the repository root
+    README.md, README.zh-CN.md, NOTICE.md, LICENSE from the repository root
     INSTALL.txt                                from tools\package\INSTALL.txt
 
   ProjectMER needs no other files: Newtonsoft.Json and YamlDotNet ship with the game, and LabApi.dll and
@@ -87,7 +87,7 @@ New-Item -ItemType Directory -Force $stage, (Join-Path $stage 'plugins') | Out-N
 Copy-Item -LiteralPath $merDll -Destination (Join-Path $stage 'plugins')
 $merPdb = Join-Path $merBin 'ProjectMER.pdb'
 if (Test-Path -LiteralPath $merPdb) { Copy-Item -LiteralPath $merPdb -Destination (Join-Path $stage 'plugins') }
-foreach ($doc in 'README.md', 'README.zh-CN.md', 'NOTICE.md') {
+foreach ($doc in 'README.md', 'README.zh-CN.md', 'NOTICE.md', 'LICENSE') {
     Copy-Item -LiteralPath (Join-Path $repo $doc) -Destination $stage
 }
 

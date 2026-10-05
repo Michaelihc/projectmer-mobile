@@ -225,6 +225,7 @@ contains no game files.
 
 ## Licence
 
-The upstream ProjectMER repository has no licence file. MapEditorReborn's source file headers state "Licensed under the
-CC BY-SA 3.0 license". This repository adds no licence file of its own. [NOTICE.md](NOTICE.md) has the credits and this
-licence status.
+The changes and additions in this repository (the Carl Mod port) are licensed under Creative Commons
+Attribution-ShareAlike 3.0 Unported ([LICENSE](LICENSE)), the licence MapEditorReborn's source files declare. Code that
+comes from upstream ProjectMER remains the work of its authors; the upstream repository publishes no licence file, so
+this repository grants no rights to that code beyond what its authors grant. [NOTICE.md](NOTICE.md) has the credits.

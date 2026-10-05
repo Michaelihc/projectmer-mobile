@@ -204,5 +204,4 @@ SCP: Secret Laboratory 是 Northwood Studios 的游戏；Carl Mod 是它的第�
 
 ## 许可
 
-上游 ProjectMER 仓库没有许可证文件。MapEditorReborn 的源文件头声明 "Licensed under the CC BY-SA 3.0 license"。本仓库
-没有添加自己的许可证文件。[NOTICE.md](NOTICE.md) 包含致谢和上述许可状态。
+本仓库中的修改和新增内容（Carl Mod 移植部分）采用 Creative Commons 署名-相同方式共享 3.0 未本地化版本（CC BY-SA 3.0 Unported，见 [LICENSE](LICENSE)）许可，与 MapEditorReborn 源文件声明的许可证一致。来自上游 ProjectMER 的代码仍归其作者所有；上游仓库没有发布许可证文件，因此本仓库不能就这部分代码授予其作者授予范围之外的任何权利。致谢见 [NOTICE.md](NOTICE.md)。
