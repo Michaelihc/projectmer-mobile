@@ -104,13 +104,10 @@ public class Create : ICommand
 			return true;
 		}
 
-		try
+		// Only check that the file exists: the schematic is parsed on a worker thread when it spawns.
+		if (!MapUtils.SchematicFileExists(objectName, out string error))
 		{
-			_ = MapUtils.GetSchematicDataByName(objectName);
-		}
-		catch (Exception e)
-		{
-			response = e.Message.ToString();
+			response = error;
 			return false;
 		}
 

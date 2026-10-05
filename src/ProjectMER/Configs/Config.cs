@@ -66,8 +66,8 @@ public class Config
 	[Description("With static_by_default, also honor \"Static\": false from the export (dynamic toy). Exporters write false for blocks that never move, so this is off.")]
 	public bool HonorStaticProperty { get; set; } = false;
 
-	[Description("Most networked objects spawned per server frame while maps and schematics stream in.")]
-	public int SpawnMaxPerFrame { get; set; } = 20;
+	[Description("Most networked objects spawned per server frame while maps and schematics stream in (also per player for join and zone streams). Phones instantiate what arrives in the same frame: 10 keeps load hitches near 100 ms on the reference emulator (20: about 170 ms, 50: 300-500 ms).")]
+	public int SpawnMaxPerFrame { get; set; } = 10;
 
 	[Description("Time budget in milliseconds per server frame for spawning queued objects.")]
 	public float SpawnTimeBudgetMs { get; set; } = 3f;
@@ -77,6 +77,9 @@ public class Config
 
 	[Description("Whether MER lights may cast shadows. Shadowed point lights are very expensive on phones.")]
 	public bool AllowLightShadows { get; set; } = false;
+
+	[Description("Multiplier for MER light intensities. ProjectMER maps and schematics use official SL's HDRP light intensities (60 is an ordinary lamp); Carl Mod renders with Unity's built-in pipeline, where 1-2 is a normal light. Use 1 for content made for Carl Mod.")]
+	public float LightIntensityScale { get; set; } = 0.025f;
 
 	[Description("Most MER lights across all loaded maps and schematics. Weaker lights (intensity x range) beyond the cap are skipped.")]
 	public int MaxLights { get; set; } = 16;
@@ -96,6 +99,12 @@ public class Config
 	[Description("Drop schematic blocks that produce nothing on the client (empty groups, invisible non-colliding primitives, zero scale).")]
 	public bool OptimizeSchematics { get; set; } = true;
 
+	[Description("Remove exact duplicate blocks and merge face-sharing cubes and edge-sharing coplanar quads in the static parts of schematics: None, Maps (schematics placed by maps, mp create and the tool gun) or All (also schematics spawned by plugins).")]
+	public BlockMergeMode MergeBlocks { get; set; } = BlockMergeMode.Maps;
+
+	[Description("Most lights kept per schematic, strongest (intensity x range) first; -1 for no per-schematic cap. max_lights still applies to the total.")]
+	public int MaxLightsPerSchematic { get; set; } = 4;
+
 	[Description("Per-player visibility of MER objects through Mirror observers (join streaming, admin-only indicators).")]
 	public bool ManagedVisibility { get; set; } = true;
 
@@ -105,7 +114,7 @@ public class Config
 	[Description("Only groups with at least this many networked objects are zone culled.")]
 	public int ZoneCullingMinObjects { get; set; } = 150;
 
-	[Description("Seconds between tool gun HUD keep-alive updates.")]
+	[Description("Seconds between checks of the tool gun HUD inputs; a changed HUD is sent at once, an unchanged one every max(2, 4 x hud_interval) seconds.")]
 	public float HudInterval { get; set; } = 0.5f;
 
 	[Description("Keep ProjectMER's warhead rule: positions below the surface that are outside every room survive the detonation.")]

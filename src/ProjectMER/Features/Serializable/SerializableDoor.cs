@@ -45,11 +45,22 @@ public class SerializableDoor : SerializableObject
 			if (!Budget.CanCreate())
 				return null;
 
+			// Door waypoint ids are bytes from 32: the game's renumbering throws at the 225th door, and positions near doors
+			// would then be decoded against the wrong door on clients.
+			if (MerWaypoints.Count >= MerWaypoints.MaxDoorWaypoints)
+			{
+				UnsupportedContent.Skip("doors", $"the facility already has {MerWaypoints.Count} doors, the most Carl Mod's relative positioning can number");
+				return null;
+			}
+
 			// DoorVariant.Start assigns byte ids from _serverDoorIdClock; past 255 they wrap and doors share ids.
 			if (DoorVariant.AllDoors.Count >= byte.MaxValue)
 				UnsupportedContent.Adapt("doors", "more than 255 doors exist, so door ids wrap and doors can share an id");
 
 			doorVariant = UnityEngine.Object.Instantiate(prefab);
+
+			// Its waypoint must not start before the door has a netId (the spawn queue spawns it in a later frame).
+			MerWaypoints.HoldUntilSpawned(doorVariant.gameObject);
 		}
 		else
 		{

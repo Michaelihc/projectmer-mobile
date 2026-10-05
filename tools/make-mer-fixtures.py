@@ -3,6 +3,8 @@
 Output:
   .runtime/mer-fixtures/Schematics/<name>/<name>.json   synthetic schematics (+ copies of real ones with --real)
   .runtime/mer-fixtures/Maps/<name>.yml                 maps that place them, plus an every-object-type map
+  A* schematics and maps                                Android client fixtures in front of the surface NTF spawn
+                                                        (STAGE_EYE), and AVoid<real> maps above the surface hall
 
 Usage:
   python tools/make-mer-fixtures.py [--real <ProjectMER schematics dir>] [--out <dir>]
@@ -22,8 +24,17 @@ DEFAULT_REAL = (r"<scpsl-plugins-metarepo>\.tests\offline-clients\runtime"
                 r"\Schematics\ProjectMER")
 REAL_NAMES = ["35Hp", "Battle", "DeathParty", "Shipment", "Skeld", "Jail"]
 
-# Surface, away from the spawn buildings; maps use world coordinates (room "Unknown" = Outside).
+# Server-side fixtures: a point in the Surface zone (y >= 900) away from players. Carl Mod's surface is a closed hall
+# and this point is in the void, so these fixtures are for server checks only; maps use world coordinates
+# (room "Unknown" = Outside).
 ORIGIN = (20.0, 1003.0, -60.0)
+
+# Android client fixtures (A* names, docs/testing.md): built around the Carl Mod NTF spawn on the surface. A player
+# teleported to STAGE_EYE ("probe tp <id> 132.76 995.4 -38.76", "probe yaw <id> 180") looks along -Z down the hall;
+# the floor is at STAGE_GROUND. VOID is open space above the hall for whole event maps.
+STAGE_EYE = (132.76, 995.4, -38.76)
+STAGE_GROUND = 994.5
+VOID = (132.76, 1100.0, -60.0)
 
 EMPTY, PRIMITIVE, LIGHT, PICKUP, WORKSTATION, SCHEMATIC, TELEPORT, LOCKER, TEXT, INTERACTABLE, WAYPOINT, TRIANGLE = range(12)
 SPHERE, CAPSULE, CYLINDER, CUBE, PLANE, QUAD = range(6)
@@ -514,6 +525,248 @@ waypoints:
 """
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Android client fixtures (stage in front of the surface NTF spawn, looking along -Z)
+# ---------------------------------------------------------------------------------------------------------------
+
+def stage_point(ahead, right=0.0, up=0.0):
+    """World point `ahead` m in front of the stage camera (along -Z), `right` m to its right (-X), `up` m above the floor."""
+    return (STAGE_EYE[0] - right, STAGE_GROUND + up, STAGE_EYE[2] - ahead)
+
+
+def wall(count, static=True, pitch=0.25, size=0.2):
+    """A vertical wall of `count` cubes facing the stage camera (50 per row at most)."""
+    s = Schematic()
+    cols = min(count, 50)
+    for i in range(count):
+        c, r = i % cols, i // cols
+        hue = (i * 37) % 255
+        s.cube(f"W{i}", pos=((c - (cols - 1) / 2) * pitch, 0.15 + r * pitch, 0), scale=(size, size, size),
+               color=f"#{hue:02X}A0{255 - hue:02X}", static=static)
+    return s
+
+
+def flag_wall():
+    """Every primitive type, flag set and sign pattern, static and dynamic (load with honor_static_property: true).
+
+    The schematic is turned 180 deg about Y so its local -Z (a Quad's visible side) faces the camera. Rows from the
+    floor: Visible|Collidable static, Visible static, Visible|Collidable dynamic, Visible dynamic. Columns from the
+    camera's left: Sphere, Capsule, Cylinder, Cube with scale (1,1,1) and (-1,-1,-1), then Quad and Plane with
+    (1,1,1), (1,1,-1), (1,-1,1), (-1,-1,-1)."""
+    s = Schematic()
+    rows = [(3, True), (2, True), (3, False), (2, False)]
+    cols = []
+    for ptype in (SPHERE, CAPSULE, CYLINDER, CUBE):
+        for sign in ((1, 1, 1), (-1, -1, -1)):
+            cols.append((ptype, sign))
+    for ptype in (QUAD, PLANE):
+        for sign in ((1, 1, 1), (1, 1, -1), (1, -1, 1), (-1, -1, -1)):
+            cols.append((ptype, sign))
+    names = {SPHERE: "Sphere", CAPSULE: "Capsule", CYLINDER: "Cylinder", CUBE: "Cube", PLANE: "Plane", QUAD: "Quad"}
+    pitch = 0.75
+    for ri, (flags, static) in enumerate(rows):
+        for ci, (ptype, sign) in enumerate(cols):
+            base = {CAPSULE: (0.4, 0.25, 0.4), CYLINDER: (0.4, 0.25, 0.4), PLANE: (0.05, 1, 0.05)}.get(ptype, (0.5, 0.5, 0.5))
+            scale = tuple(b * g for b, g in zip(base, sign))
+            # The schematic is turned 180 deg, so local +X is the camera's left: column 0 is leftmost on screen.
+            x = ((len(cols) - 1) / 2 - ci) * pitch
+            color = "#FF4040" if flags == 3 else "#40A0FF"
+            if not static:
+                color = "#FFC040" if flags == 3 else "#40FF80"
+            tag = "".join("p" if g > 0 else "n" for g in sign)
+            s.cube(f"R{ri}_{names[ptype]}_{tag}", pos=(x, 0.4 + ri * 0.8, 0), scale=scale, color=color, flags=flags,
+                   ptype=ptype, static=static)
+    return s
+
+
+def walk_lanes():
+    """Three walls across three lanes, 3 m ahead: Visible only (blue, walk through), Visible|Collidable (red, blocks)
+    and Collidable only (alpha 0 with invisible_collider_mode Transparent: invisible, blocks). Lanes are 4 m apart;
+    lane 0 is on the camera's left."""
+    s = Schematic()
+    for i, (flags, color) in enumerate(((2, "#4060FF"), (3, "#FF4040"), (1, "#FFFFFF"))):
+        s.cube(f"Lane{i}_flags{flags}", pos=(4.0 - i * 4.0, 1.25, 0), scale=(3, 2.5, 0.2), color=color, flags=flags)
+    return s
+
+
+def seams(static):
+    """Ten touching 0.6 m cubes along a rotated axis, alternating colours, plus a rotated slab of 4x4 tiles."""
+    s = Schematic()
+    # Blocks share the parent's rotation, so they touch exactly along the parent's local axes.
+    row = s.add("Row", EMPTY, pos=(0, 1.6, 0), rot=(17.0, 33.0, 11.0))
+    for i in range(10):
+        s.cube(f"Seam{i}", row, pos=((i - 4.5) * 0.6, 0, 0), scale=(0.6, 0.6, 0.6),
+               color="#E0E0E0" if i % 2 else "#303030", static=static)
+    slab = s.add("Slab", EMPTY, pos=(0, 0.4, 0), rot=(0.0, 21.0, 9.0))
+    for i in range(16):
+        s.cube(f"Tile{i}", slab, pos=((i % 4 - 1.5) * 0.8, 0, (i // 4 - 1.5) * 0.8), scale=(0.8, 0.1, 0.8),
+               color="#C0C0C0" if (i + i // 4) % 2 else "#404040", static=static)
+    return s
+
+
+def stage_map_schematic(key, schematic, point, yaw=0.0):
+    return f"""  {key}:
+    schematic_name: {schematic}
+    position: {yaml_vec(*point)}
+    rotation: 0.000, {yaw:.3f}, 0.000
+    scale: 1.000, 1.000, 1.000
+    room: Unknown
+    index: -1
+"""
+
+
+def stage_lights(count, shadows):
+    """`count` point lights over the wall area, as map lights (max_lights applies, not the per-schematic cap)."""
+    out = "lights:\n"
+    for i in range(count):
+        c, r = i % 4, i // 4
+        point = stage_point(8.0 + r * 2.0, (c - 1.5) * 3.0, 2.0)
+        out += f"""  light{i}:
+    color: '#FFE8C0'
+    intensity: 1.5
+    range: 7
+    shadows: {"Soft" if shadows else "None"}
+    strength: 1
+    light_type: Point
+    shape: Cone
+    spot_angle: 30
+    inner_spot_angle: 0
+    position: {yaml_vec(*point)}
+    rotation: 0.000, 0.000, 0.000
+    room: Unknown
+    index: -1
+"""
+    return out
+
+
+def stage_every_type():
+    """Doors, a workstation, lockers, pickups, a shooting target and a teleport pair in front of the stage camera."""
+    def at(ahead, right, up=0.0):
+        return yaml_vec(*stage_point(ahead, right, up))
+
+    def door(key, kind, ahead, right, yaw):
+        return f"""  {key}:
+    door_type: {kind}
+    is_open: false
+    is_locked: false
+    required_permissions: None
+    require_all: true
+    position: {at(ahead, right)}
+    rotation: 0.000, {yaw:.3f}, 0.000
+    scale: 1.000, 1.000, 1.000
+    room: Unknown
+    index: -1
+"""
+
+    def locker(key, kind, ahead, right, yaw, item):
+        loot = f"""
+    - target_item: {item}
+      remaining_uses: 1
+      max_per_chamber: 1
+      probability_points: 100
+      min_per_chamber: 1""" if item else " []"
+        return f"""  {key}:
+    locker_type: {kind}
+    loot:{loot}
+    chambers: []
+    position: {at(ahead, right)}
+    rotation: 0.000, {yaw:.3f}, 0.000
+    scale: 1.000, 1.000, 1.000
+    room: Unknown
+    index: -1
+"""
+
+    def item(key, kind, ahead, right, up, yaw, gravity):
+        return f"""  {key}:
+    item_type: {kind}
+    weight: -1
+    attachments_code: -1
+    number_of_items: 1
+    number_of_uses: 1
+    use_gravity: {"true" if gravity else "false"}
+    can_be_picked_up: true
+    position: {at(ahead, right, up)}
+    rotation: 0.000, {yaw:.3f}, 0.000
+    scale: 1.000, 1.000, 1.000
+    room: Unknown
+    index: -1
+"""
+
+    return ("doors:\n" + door("door_lcz", "Lcz", 7, -4, 0) + door("door_hcz", "Hcz", 7, 0, 30) + door("door_ez", "Ez", 7, 4, 90)
+            + f"""workstations:
+  ws_yaw45:
+    is_interactable: true
+    position: {at(3.5, -3.5)}
+    rotation: 0.000, 45.000, 0.000
+    scale: 1.000, 1.000, 1.000
+    room: Unknown
+    index: -1
+"""
+            + "lockers:\n" + locker("locker_medkit", "Medkit", 3.5, 3.5, 180, "Medkit")
+            + locker("locker_rifle", "RifleRack", 10, 3.5, 150, "GunE11SR") + locker("locker_scp500", "PedestalScp500", 10, -3.5, 210, None)
+            + "item_spawnpoints:\n" + item("isp_medkit", "Medkit", 2.5, -1, 0.1, 0, False)
+            + item("isp_gun", "GunE11SR", 2.5, 0, 0.1, 90, False) + item("isp_card", "KeycardMTFCaptain", 2.5, 1, 0.5, 0, True)
+            + f"""shooting_targets:
+  target_sport:
+    target_type: Sport
+    position: {at(12, -1.5)}
+    rotation: 0.000, 180.000, 0.000
+    scale: 1.000, 1.000, 1.000
+    room: Unknown
+    index: -1
+teleports:
+  tp_a:
+    targets:
+    - tp_b
+    cooldown: 5
+    position: {at(4, 6, 1)}
+    rotation: 0.000, 0.000, 0.000
+    scale: 1.000, 2.000, 1.000
+    room: Unknown
+    index: -1
+  tp_b:
+    targets:
+    - tp_a
+    cooldown: 5
+    position: {at(12, 6, 1)}
+    rotation: 0.000, 180.000, 0.000
+    scale: 1.000, 2.000, 1.000
+    room: Unknown
+    index: -1
+""")
+
+
+def write_android(schematics, maps):
+    synthetic = {
+        "AWall150": wall(150), "AWall500": wall(500), "AWall2000": wall(2000),
+        "AWall500Dyn": wall(500, static=False),
+        "AFlagWall": flag_wall(), "AWalkLanes": walk_lanes(),
+        "ASeamsStatic": seams(True), "ASeamsDynamic": seams(False),
+    }
+    for name, sch in synthetic.items():
+        sch.write(schematics, name)
+
+    def write_map(name, body):
+        with open(os.path.join(maps, f"{name}.yml"), "w", encoding="utf-8") as f:
+            f.write(body)
+
+    for n in (150, 500, 2000):
+        write_map(f"AWall{n}", "schematics:\n" + stage_map_schematic("wall", f"AWall{n}", stage_point(14.0)))
+    write_map("AWall500Dyn", "schematics:\n" + stage_map_schematic("wall", "AWall500Dyn", stage_point(14.0)))
+    write_map("AFlagWall", "schematics:\n" + stage_map_schematic("flags", "AFlagWall", stage_point(7.0), 180.0))
+    write_map("AWalkLanes", "schematics:\n" + stage_map_schematic("lanes", "AWalkLanes", stage_point(3.0)))
+    write_map("ASeams", "schematics:\n" + stage_map_schematic("static", "ASeamsStatic", stage_point(5.0, -3.5))
+              + stage_map_schematic("dynamic", "ASeamsDynamic", stage_point(5.0, 3.5)))
+    for n in (8, 16):
+        write_map(f"ALights{n}", stage_lights(n, False))
+    write_map("ALights8Shadows", stage_lights(8, True))
+    write_map("AEveryType", stage_every_type())
+    for name in REAL_NAMES:
+        if os.path.isdir(os.path.join(schematics, name)):
+            write_map(f"AVoid{name}", "schematics:\n" + stage_map_schematic("map", name, VOID))
+    return sorted(synthetic)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--real", default=DEFAULT_REAL)
@@ -563,7 +816,9 @@ def main():
     with open(os.path.join(maps, "EveryType.yml"), "w", encoding="utf-8") as f:
         f.write(EVERY_TYPE_MAP.format(**positions))
 
-    print(f"Wrote {len(synthetic)} synthetic schematics, copied {copied}, maps: {sorted(os.listdir(maps))}")
+    android_names = write_android(schematics, maps)
+
+    print(f"Wrote {len(synthetic)} synthetic schematics, Android fixtures {android_names}, copied {copied}, maps: {sorted(os.listdir(maps))}")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,10 @@
+using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using AdminToys;
 using InventorySystem.Items.Firearms.Attachments;
 using LabApi.Features.Wrappers;
 using Mirror;
-using ProjectMER.Configs;
 using ProjectMER.Events.Arguments;
 using ProjectMER.Events.Handlers;
 using ProjectMER.Events.Handlers.Internal;
@@ -30,9 +31,16 @@ namespace ProjectMER.Features.Objects;
 /// <para>
 /// Blocks are static toys unless they are in the subtree of an animated block or a rigidbody entry (those follow their
 /// anchors through <see cref="SchematicSync"/>), or <see cref="IsStatic"/> is set to <see langword="false"/>. Exported
-/// <c>"Static"</c> properties only count with <c>honor_static_property</c> or without <c>static_by_default</c>. Network spawning goes through <see cref="SpawnQueue"/>: <see cref="Schematic.SchematicSpawned"/>
-/// still fires synchronously once the server objects exist, and <see cref="Schematic.SchematicBuilt"/> (with
-/// <see cref="IsBuilt"/>) once every block is networked.
+/// <c>"Static"</c> properties only count with <c>honor_static_property</c> or without <c>static_by_default</c>.
+/// </para>
+/// <para>
+/// Loading never stalls a frame (§3.5): the file is parsed and planned (<see cref="SchematicOptimizer"/>) on a worker
+/// thread, then <see cref="SpawnQueue"/> builds anchors and toys a few at a time within each frame's spawn budget and
+/// networks them. <see cref="IsSpawned"/> and <see cref="Schematic.SchematicSpawned"/> mark that every server object
+/// exists; <see cref="IsBuilt"/> and <see cref="Schematic.SchematicBuilt"/> that every networked block reached the
+/// clients. Members that return blocks (<see cref="AttachedBlocks"/>, <see cref="NetworkIdentities"/>,
+/// <see cref="AdminToyBases"/>, <see cref="AnimationController"/>) and the <see cref="IsStatic"/> setter finish the
+/// build synchronously first (<see cref="EnsureSpawned"/>), so code written for ProjectMER sees a complete schematic.
 /// </para>
 /// </remarks>
 public class SchematicObject : MonoBehaviour
@@ -105,39 +113,47 @@ public class SchematicObject : MonoBehaviour
 
 	/// <summary>
 	/// Gets the GameObjects of the blocks: the server-side anchor where a block has one, and the networked object where it
-	/// has one (both for networked blocks with children). Networked blocks are not children of this object.
+	/// has one (both for networked blocks with children), plus merged blocks. Networked blocks are not children of this
+	/// object. Finishes the build first.
 	/// </summary>
 	public IReadOnlyList<GameObject> AttachedBlocks
 	{
 		get
 		{
+			EnsureSpawned();
 			_attachedBlocks.RemoveAll(static x => x == null);
 			return _attachedBlocks;
 		}
 	}
 
 	/// <summary>
-	/// Gets the network identities of the networked blocks.
+	/// Gets the network identities of the networked blocks. Finishes the build first.
 	/// </summary>
 	public IReadOnlyList<NetworkIdentity> NetworkIdentities
 	{
 		get
 		{
-			_networkIdentities.Clear();
-			foreach (BlockRecord record in _records)
-			{
-				if (record.Networked != null && record.Networked.TryGetComponent(out NetworkIdentity identity))
-					_networkIdentities.Add(identity);
-			}
-
-			return _networkIdentities;
+			EnsureSpawned();
+			return CurrentNetworkIdentities;
 		}
 	}
 
 	/// <summary>
-	/// Gets the admin toys among the networked blocks.
+	/// Gets the admin toys among the networked blocks. Finishes the build first.
 	/// </summary>
 	public IReadOnlyList<AdminToyBase> AdminToyBases
+	{
+		get
+		{
+			EnsureSpawned();
+			return CurrentAdminToyBases;
+		}
+	}
+
+	/// <summary>
+	/// Gets the admin toys created so far, without finishing the build (for periodic scans that must not stall a frame).
+	/// </summary>
+	public IReadOnlyList<AdminToyBase> CurrentAdminToyBases
 	{
 		get
 		{
@@ -152,17 +168,50 @@ public class SchematicObject : MonoBehaviour
 		}
 	}
 
+	/// <summary>
+	/// Gets the network identities of the networked blocks created so far, without finishing the build.
+	/// </summary>
+	public IReadOnlyList<NetworkIdentity> CurrentNetworkIdentities
+	{
+		get
+		{
+			_networkIdentities.Clear();
+			foreach (BlockRecord record in _records)
+			{
+				if (record.Networked != null && record.Networked.TryGetComponent(out NetworkIdentity identity))
+					_networkIdentities.Add(identity);
+			}
+
+			return _networkIdentities;
+		}
+	}
+
 	public AnimationController AnimationController => AnimationController.Get(this);
 
 	/// <summary>
-	/// Gets the data the schematic was built from. Shared with the parse cache; do not modify it.
+	/// Gets the data the schematic was built from. Shared with the parse cache; do not modify it. Waits for the parse
+	/// when it is still running.
 	/// </summary>
-	public SchematicObjectDataList Data { get; private set; }
+	public SchematicObjectDataList Data
+	{
+		get
+		{
+			EnsureLoaded();
+			return _data;
+		}
+	}
 
 	/// <summary>
-	/// Gets the simplified build plan.
+	/// Gets the simplified build plan. Waits for the plan when it is still being made.
 	/// </summary>
-	public SchematicBuildPlan Plan { get; private set; }
+	public SchematicBuildPlan Plan
+	{
+		get
+		{
+			EnsureLoaded();
+			return _plan;
+		}
+	}
 
 	/// <summary>
 	/// Gets the spawn group of the schematic's networked blocks.
@@ -170,12 +219,18 @@ public class SchematicObject : MonoBehaviour
 	public SpawnGroup SpawnGroup { get; private set; }
 
 	/// <summary>
+	/// Gets whether every server-side object of the schematic exists (raised as <see cref="Schematic.SchematicSpawned"/>).
+	/// The networked blocks may still be streaming to clients.
+	/// </summary>
+	public bool IsSpawned { get; private set; }
+
+	/// <summary>
 	/// Gets whether every networked block has been spawned for clients.
 	/// </summary>
 	public bool IsBuilt { get; private set; }
 
 	/// <summary>
-	/// Gets the number of networked blocks.
+	/// Gets the number of networked blocks created so far (all of them once <see cref="IsSpawned"/>).
 	/// </summary>
 	public int NetworkedCount => _records.Count;
 
@@ -185,8 +240,9 @@ public class SchematicObject : MonoBehaviour
 	public MapEditorObject? MapEditorObject => _mapEditorObject != null ? _mapEditorObject : (_mapEditorObject = GetComponent<MapEditorObject>());
 
 	/// <summary>
-	/// Gets or sets whether the blocks are static toys. Setting it to <see langword="false"/> switches every toy to a
-	/// synced dynamic toy that follows its anchor; setting it back resends the blocks in place.
+	/// Gets or sets whether the blocks are static toys. Setting it to <see langword="false"/> finishes the build, networks
+	/// merged and duplicate blocks individually again, and switches every toy to a synced dynamic toy that follows its
+	/// anchor; setting it back resends the blocks in place.
 	/// </summary>
 	public bool IsStatic
 	{
@@ -210,71 +266,61 @@ public class SchematicObject : MonoBehaviour
 	public SchematicObject Init(SchematicObjectDataList data) => Init(data, null);
 
 	/// <summary>
-	/// Builds the schematic.
+	/// Builds the schematic. The plan is made on a worker thread (or taken from the cache), and the blocks are built and
+	/// networked across the next frames.
 	/// </summary>
 	/// <param name="data">The schematic data (may be the cached instance; it is not modified).</param>
 	/// <param name="parentGroup">The spawn group of the map that loads the schematic, if any.</param>
 	public SchematicObject Init(SchematicObjectDataList data, SpawnGroup? parentGroup)
 	{
-		long buildStart = System.Diagnostics.Stopwatch.GetTimestamp();
-		Data = data;
-		Name = Path.GetFileNameWithoutExtension(data.Path);
-		DirectoryPath = data.Path;
-		Plan = SchematicOptimizer.GetPlan(data);
-		SpawnGroup = new SpawnGroup($"schematic {Name}", parentGroup) { Anchor = transform.position };
+		if (data == null)
+			throw new ArgumentNullException(nameof(data));
 
-		ObjectFromId = new Dictionary<int, Transform>(data.Blocks.Count + 1)
-		{
-			{ data.RootObjectId, transform },
-		};
-
-		using (UnsupportedContent.Begin($"Schematic \"{Name}\""))
-		try
-		{
-			foreach (KeyValuePair<BlockType, int> pair in Plan.Unsupported)
-			{
-				for (int i = 0; i < pair.Value; i++)
-					UnsupportedContent.Skip($"{pair.Key} blocks", SchematicOptimizer.GetUnsupportedReason(pair.Key));
-			}
-
-			Dictionary<int, RuntimeAnimatorController> animators = LoadAnimators();
-			_rigidbodies = LoadRigidbodies();
-
-			// Only animated and physics blocks and their subtrees move; everything else stays static.
-			_dynamicRoots.Clear();
-			foreach (int id in animators.Keys)
-				_dynamicRoots.Add(id);
-
-			foreach (int id in _rigidbodies.Keys)
-				_dynamicRoots.Add(id);
-
-			Build();
-
-			if (_dynamicRoots.Count > 0)
-				SetUpDynamic(followAll: false);
-
-			foreach (KeyValuePair<int, RuntimeAnimatorController> pair in animators)
-			{
-				if (ObjectFromId.TryGetValue(pair.Key, out Transform anchor))
-					anchor.gameObject.AddComponent<Animator>().runtimeAnimatorController = pair.Value;
-			}
-
-			if (animators.Count > 0)
-				AssetBundle.UnloadAllAssetBundles(false);
-		}
-		finally
-		{
-			ReleaseScratch();
-		}
-
-		LogSummary((System.Diagnostics.Stopwatch.GetTimestamp() - buildStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
-
-		Schematic.OnSchematicSpawned(new(this, Name));
-
-		SpawnGroup.Completed += OnSpawnGroupCompleted;
-		SpawnGroup.CheckCompleted();
-
+		Name = data.Path != null ? Path.GetFileNameWithoutExtension(data.Path) : gameObject.name;
+		DirectoryPath = data.Path!;
+		_data = data;
+		Begin(parentGroup);
+		_planJob = SchematicLoader.LoadPlan(data, _settings);
+		_phase = BuildPhase.LoadingPlan;
+		SpawnQueue.AddBuilder(this);
 		return this;
+	}
+
+	/// <summary>
+	/// Builds the schematic from its file, parsed on a worker thread. <see cref="Schematic.SchematicSpawning"/> is raised
+	/// once the data is available; cancelling it destroys this object.
+	/// </summary>
+	internal SchematicObject InitFromFile(string schematicName, string directory, string jsonPath, SpawnGroup? parentGroup)
+	{
+		Name = schematicName;
+		DirectoryPath = directory;
+		Begin(parentGroup);
+		_raiseSpawning = true;
+		_dataJob = SchematicLoader.LoadFile(schematicName, directory, jsonPath, Schematic.HasSchematicSpawningSubscribers ? null : _settings);
+		_phase = BuildPhase.LoadingData;
+		SpawnQueue.AddBuilder(this);
+		return this;
+	}
+
+	/// <summary>
+	/// Finishes loading and building synchronously (waiting for the worker thread if needed). The networked blocks keep
+	/// streaming to clients through the spawn queue. Does nothing once <see cref="IsSpawned"/>.
+	/// </summary>
+	public void EnsureSpawned()
+	{
+		if (_phase is BuildPhase.NotStarted or >= BuildPhase.Spawned || _stepping)
+			return;
+
+		while (_phase < BuildPhase.Spawned)
+		{
+			if (_phase == BuildPhase.LoadingData)
+				_dataJob!.Wait();
+			else if (_phase == BuildPhase.LoadingPlan)
+				_planJob!.Wait();
+
+			if (StepBuild(long.MaxValue))
+				break;
+		}
 	}
 
 	public void Destroy() => Destroy(gameObject);
@@ -297,6 +343,393 @@ public class SchematicObject : MonoBehaviour
 		finally
 		{
 			ReleaseScratch();
+		}
+	}
+
+	/// <summary>
+	/// Runs build steps until <paramref name="deadline"/> (a <see cref="Stopwatch"/> timestamp). Each call that has work
+	/// makes at least one step. Called by <see cref="SpawnQueue"/> every frame.
+	/// </summary>
+	/// <returns>Whether the build is over (finished, failed or destroyed).</returns>
+	internal bool StepBuild(long deadline)
+	{
+		if (this == null || _phase is BuildPhase.NotStarted or >= BuildPhase.Spawned)
+			return true;
+
+		if (_stepping)
+			return false;
+
+		_stepping = true;
+		long sliceStart = Stopwatch.GetTimestamp();
+		bool worked = false;
+		bool reporting = false;
+		try
+		{
+			while (true)
+			{
+				switch (_phase)
+				{
+					case BuildPhase.LoadingData:
+						if (!_dataJob!.IsCompleted)
+							return false;
+
+						worked = true;
+						if (!CompleteData())
+							return true;
+
+						break;
+
+					case BuildPhase.LoadingPlan:
+						if (!_planJob!.IsCompleted)
+							return false;
+
+						worked = true;
+						if (!CompletePlan())
+							return true;
+
+						break;
+
+					case BuildPhase.Prepare:
+						worked = true;
+						_report = UnsupportedContent.Begin($"Schematic \"{Name}\"");
+						reporting = true;
+						Prepare();
+						_phase = BuildPhase.Animators;
+						break;
+
+					case BuildPhase.Animators:
+						worked = true;
+						Report(ref reporting);
+						if (!LoadAnimators(deadline))
+							return false;
+
+						_phase = BuildPhase.Blocks;
+						break;
+
+					case BuildPhase.Blocks:
+						worked = true;
+						Report(ref reporting);
+						if (!BuildBlocks(deadline))
+							return false;
+
+						_phase = BuildPhase.AddedBlocks;
+						break;
+
+					case BuildPhase.AddedBlocks:
+						worked = true;
+						Report(ref reporting);
+						if (!BuildAddedBlocks(deadline))
+							return false;
+
+						_phase = BuildPhase.Finish;
+						break;
+
+					case BuildPhase.Finish:
+						worked = true;
+						Report(ref reporting);
+						reporting = false;
+						Finish(sliceStart);
+						return true;
+
+					default:
+						return true;
+				}
+
+				if (Stopwatch.GetTimestamp() >= deadline)
+					return false;
+			}
+		}
+		finally
+		{
+			if (reporting && _report != null)
+				UnsupportedContent.Suspend(_report);
+
+			ReleaseScratch();
+			_stepping = false;
+			if (worked)
+			{
+				double sliceMs = (Stopwatch.GetTimestamp() - sliceStart) * 1000.0 / Stopwatch.Frequency;
+				_buildMs += sliceMs;
+				_buildSlices++;
+				if (sliceMs > _worstSliceMs)
+					_worstSliceMs = sliceMs;
+			}
+		}
+	}
+
+	internal Dictionary<int, Transform> ObjectFromId = [];
+
+	private void Begin(SpawnGroup? parentGroup)
+	{
+		_loadStart = Stopwatch.GetTimestamp();
+		SpawnGroup = new SpawnGroup($"schematic {Name}", parentGroup) { Anchor = transform.position };
+		_settings = OptimizerSettings.FromConfig(parentGroup != null);
+
+		// Merged blocks are exact in schematic space; a non-uniform root scale would shear rotated ones differently.
+		if (_settings.MergeBlocks && !IsUniform(transform.lossyScale))
+			_settings = _settings with { MergeBlocks = false };
+	}
+
+	private static bool IsUniform(Vector3 scale) =>
+		Mathf.Abs(scale.x - scale.y) <= 1e-4f * Mathf.Abs(scale.x) && Mathf.Abs(scale.x - scale.z) <= 1e-4f * Mathf.Abs(scale.x);
+
+	/// <summary>
+	/// Resumes this schematic's warning scope for the current step.
+	/// </summary>
+	private void Report(ref bool reporting)
+	{
+		if (reporting || _report == null)
+			return;
+
+		UnsupportedContent.Resume(_report);
+		reporting = true;
+	}
+
+	private bool CompleteData()
+	{
+		SchematicLoadJob job = _dataJob!;
+		job.Publish();
+		if (job.Data == null)
+		{
+			Logger.Error(job.Error ?? $"Failed to load schematic data: {Name}");
+			Fail();
+			return false;
+		}
+
+		SchematicObjectDataList data = job.Data;
+		if (_raiseSpawning && Schematic.HasSchematicSpawningSubscribers)
+		{
+			// Handlers may change the data; the cached instance must stay untouched.
+			SchematicSpawningEventArgs ev = new(data.Clone(), Name);
+			Schematic.OnSchematicSpawning(ev);
+			if (!ev.IsAllowed || ev.Data == null)
+			{
+				Fail();
+				return false;
+			}
+
+			data = ev.Data;
+		}
+
+		_data = data;
+		DirectoryPath ??= data.Path;
+		_planJob = job.Plan != null && ReferenceEquals(job.Data, data) ? job : SchematicLoader.LoadPlan(data, _settings);
+		_phase = BuildPhase.LoadingPlan;
+		return true;
+	}
+
+	private bool CompletePlan()
+	{
+		SchematicLoadJob job = _planJob!;
+		job.Publish();
+		if (job.Plan == null)
+		{
+			Logger.Error(job.Error ?? $"Schematic \"{Name}\" could not be planned.");
+			Fail();
+			return false;
+		}
+
+		if (job.RigidbodiesError != null)
+			Logger.Warn($"Schematic \"{Name}\": {job.RigidbodiesError}; the schematic stays static.");
+
+		_plan = job.Plan;
+		_planWasCached = job.WasCached;
+		_phase = BuildPhase.Prepare;
+		return true;
+	}
+
+	private void Fail()
+	{
+		_phase = BuildPhase.Failed;
+
+		// A map already listed this schematic (the load was deferred); take it out again.
+		MapEditorObject? mapEditorObject = MapEditorObject;
+		if (mapEditorObject != null && mapEditorObject.MapName != null && MapUtils.LoadedMaps.TryGetValue(mapEditorObject.MapName, out Serializable.MapSchematic map))
+			map.SpawnedObjects.Remove(mapEditorObject);
+
+		Destroy(gameObject);
+	}
+
+	private void Prepare()
+	{
+		ObjectFromId = new Dictionary<int, Transform>(_data.Blocks.Count + 1)
+		{
+			{ _data.RootObjectId, transform },
+		};
+
+		foreach (KeyValuePair<BlockType, int> pair in _plan.Unsupported)
+		{
+			for (int i = 0; i < pair.Value; i++)
+				UnsupportedContent.Skip($"{pair.Key} blocks", SchematicOptimizer.GetUnsupportedReason(pair.Key));
+		}
+
+		for (int i = 0; i < _plan.SkippedInvisibleColliders; i++)
+			UnsupportedContent.Skip("invisible colliders", "invisible_collider_mode is Skip");
+
+		// Only animated and physics blocks and their subtrees move; everything else stays static.
+		_rigidbodies = _plan.Rigidbodies;
+		_dynamicRoots.Clear();
+		foreach (int id in _rigidbodies.Keys)
+			_dynamicRoots.Add(id);
+
+		_lightAdmitted = AdmitLights();
+		_stack.Clear();
+		PushChildren(_data.RootObjectId, transform, false);
+	}
+
+	/// <summary>
+	/// Loads the animator bundles, one block per step.
+	/// </summary>
+	private bool LoadAnimators(long deadline)
+	{
+		List<int> animated = _plan.AnimatedBlocks;
+		while (_animatorIndex < animated.Count)
+		{
+			SchematicBlockData block = _data.Blocks[animated[_animatorIndex++]];
+			if (TryGetAnimatorController(block.AnimatorName, out RuntimeAnimatorController controller))
+			{
+				_animators[block.ObjectId] = controller;
+				_dynamicRoots.Add(block.ObjectId);
+			}
+
+			if (_animatorIndex < animated.Count && Stopwatch.GetTimestamp() >= deadline)
+				return false;
+		}
+
+		// The controllers stay loaded; the bundles are no longer needed.
+		if (_animators.Count > 0)
+			AssetBundle.UnloadAllAssetBundles(false);
+
+		return true;
+	}
+
+	private bool BuildBlocks(long deadline)
+	{
+		List<SchematicBlockData> blocks = _data.Blocks;
+		while (_stack.Count > 0)
+		{
+			(int index, Transform parent, bool dynamicParent) = _stack.Pop();
+			SchematicBlockData block = blocks[index];
+			bool dynamic = dynamicParent || _dynamicRoots.Contains(block.ObjectId);
+			List<int> children = _plan.GetChildren(block.ObjectId);
+			BlockOutput output = _plan.Outputs[index];
+
+			if (output == BlockOutput.Light && !_lightAdmitted[index])
+				output = BlockOutput.None;
+
+			if (output == BlockOutput.Pickup && block.Properties != null && block.Properties.TryGetValue("Chance", out object chance) && UnityEngine.Random.Range(0, 101) > Convert.ToSingle(chance, CultureInfo.InvariantCulture))
+				output = BlockOutput.None;
+
+			Quaternion localRotation = Quaternion.Euler(block.Rotation);
+			Transform? anchor = null;
+			if (dynamic || children.Count > 0 || output == BlockOutput.None)
+				anchor = CreateAnchor(block, parent, localRotation);
+
+			BlockRecord record = new(block, index, output, parent, anchor, localRotation) { InDynamicSubtree = dynamic, Flags = _plan.Flags[index] };
+			GameObject? networked = output == BlockOutput.None ? null : CreateNetworked(record);
+			if (networked == null && anchor == null)
+				anchor = record.Anchor = CreateAnchor(block, parent, localRotation);
+
+			if (anchor != null)
+			{
+				ObjectFromId[block.ObjectId] = anchor;
+				_attachedBlocks.Add(anchor.gameObject);
+			}
+
+			if (networked != null)
+			{
+				networked.name = block.Name;
+				record.Networked = networked;
+				_records.Add(record);
+				_attachedBlocks.Add(networked);
+				if (anchor == null)
+					ObjectFromId[block.ObjectId] = networked.transform;
+			}
+
+			if (children.Count > 0)
+				PushChildren(block.ObjectId, anchor!, dynamic);
+
+			if (_stack.Count > 0 && Stopwatch.GetTimestamp() >= deadline)
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Builds the blocks the optimizer added (merged cubes and quads) as static leaves under the root.
+	/// </summary>
+	private bool BuildAddedBlocks(long deadline)
+	{
+		List<SchematicBuildPlan.AddedBlock> added = _plan.AddedBlocks;
+		while (_addedIndex < added.Count)
+		{
+			SchematicBuildPlan.AddedBlock block = added[_addedIndex++];
+			BlockRecord record = new(block.Data, -1, block.Output, transform, null, block.Rotation) { Flags = block.Flags, SourceIndex = block.Sources[0] };
+			GameObject? networked = CreateNetworked(record);
+			if (networked != null)
+			{
+				networked.name = block.Data.Name;
+				record.Networked = networked;
+				_records.Add(record);
+				_attachedBlocks.Add(networked);
+			}
+
+			if (_addedIndex < added.Count && Stopwatch.GetTimestamp() >= deadline)
+				return false;
+		}
+
+		return true;
+	}
+
+	private void Finish(long sliceStart)
+	{
+		if (_dynamicRoots.Count > 0)
+			SetUpDynamic(followAll: false);
+
+		foreach (KeyValuePair<int, RuntimeAnimatorController> pair in _animators)
+		{
+			if (ObjectFromId.TryGetValue(pair.Key, out Transform anchor))
+				anchor.gameObject.AddComponent<Animator>().runtimeAnimatorController = pair.Value;
+		}
+
+		ReleaseLightReservations();
+
+		if (_report != null)
+		{
+			_report.Dispose();
+			_report = null;
+		}
+
+		double sliceMs = (Stopwatch.GetTimestamp() - sliceStart) * 1000.0 / Stopwatch.Frequency;
+		LogSummary(_buildMs + sliceMs, _buildSlices + 1, Math.Max(_worstSliceMs, sliceMs));
+
+		IsSpawned = true;
+		_phase = BuildPhase.Spawned;
+		Schematic.OnSchematicSpawned(new(this, Name));
+
+		SpawnGroup.Completed += OnSpawnGroupCompleted;
+		SpawnGroup.CheckCompleted();
+	}
+
+	/// <summary>
+	/// Waits for the data and the plan (not for the build).
+	/// </summary>
+	private void EnsureLoaded()
+	{
+		if (_stepping)
+			return;
+
+		while (_phase is BuildPhase.LoadingData or BuildPhase.LoadingPlan)
+		{
+			if (_phase == BuildPhase.LoadingData)
+				_dataJob!.Wait();
+			else
+				_planJob!.Wait();
+
+			// A deadline in the past: complete the finished phase and stop.
+			if (StepBuild(0))
+				break;
 		}
 	}
 
@@ -360,113 +793,20 @@ public class SchematicObject : MonoBehaviour
 		}
 	}
 
-	internal Dictionary<int, Transform> ObjectFromId = [];
-
-	private void Build()
+	private void PushChildren(int objectId, Transform parent, bool dynamic)
 	{
-		List<SchematicBlockData> blocks = Data.Blocks;
-		bool[] lightAdmitted = AdmitLights();
-
-		Stack<(int Index, Transform Parent, bool Dynamic)> stack = new();
-		PushChildren(stack, Data.RootObjectId, transform, false);
-
-		while (stack.Count > 0)
-		{
-			(int index, Transform parent, bool dynamicParent) = stack.Pop();
-			SchematicBlockData block = blocks[index];
-			bool dynamic = dynamicParent || _dynamicRoots.Contains(block.ObjectId);
-			List<int> children = Plan.GetChildren(block.ObjectId);
-			BlockOutput output = Plan.Outputs[index];
-
-			if (output == BlockOutput.Light && !lightAdmitted[index])
-				output = BlockOutput.None;
-
-			if (output == BlockOutput.Pickup && block.Properties != null && block.Properties.TryGetValue("Chance", out object chance) && UnityEngine.Random.Range(0, 101) > Convert.ToSingle(chance, CultureInfo.InvariantCulture))
-				output = BlockOutput.None;
-
-			Transform? anchor = null;
-			if (dynamic || children.Count > 0 || output == BlockOutput.None)
-				anchor = CreateAnchor(block, parent);
-
-			BlockRecord record = new(block, index, output, parent, anchor) { InDynamicSubtree = dynamic, Flags = Plan.Flags[index] };
-			GameObject? networked = output == BlockOutput.None ? null : CreateNetworked(record);
-			if (networked == null && anchor == null)
-				anchor = record.Anchor = CreateAnchor(block, parent);
-
-			if (anchor != null)
-			{
-				ObjectFromId[block.ObjectId] = anchor;
-				_attachedBlocks.Add(anchor.gameObject);
-			}
-
-			if (networked != null)
-			{
-				networked.name = block.Name;
-				record.Networked = networked;
-				_records.Add(record);
-				_attachedBlocks.Add(networked);
-				if (anchor == null)
-					ObjectFromId[block.ObjectId] = networked.transform;
-			}
-
-			if (children.Count > 0)
-				PushChildren(stack, block.ObjectId, anchor!, dynamic);
-		}
-
-		BuildAddedBlocks();
-	}
-
-	/// <summary>
-	/// Builds the blocks the optimizer added (for example merged cubes) as static leaves under their parent.
-	/// </summary>
-	private void BuildAddedBlocks()
-	{
-		foreach (SchematicBuildPlan.AddedBlock added in Plan.AddedBlocks)
-		{
-			if (!ObjectFromId.TryGetValue(added.Data.ParentId, out Transform parent) || parent.GetComponent<MerBlockLink>() != null)
-				parent = transform;
-
-			BlockRecord record = new(added.Data, -1, added.Output, parent, null) { Flags = added.Flags };
-			GameObject? networked = CreateNetworked(record);
-			if (networked == null)
-				continue;
-
-			networked.name = added.Data.Name;
-			record.Networked = networked;
-			_records.Add(record);
-			_attachedBlocks.Add(networked);
-		}
-	}
-
-	private void PushChildren(Stack<(int Index, Transform Parent, bool Dynamic)> stack, int objectId, Transform parent, bool dynamic)
-	{
-		List<int> children = Plan.GetChildren(objectId);
+		List<int> children = _plan.GetChildren(objectId);
 		for (int i = children.Count - 1; i >= 0; i--)
-			stack.Push((children[i], parent, dynamic));
+			_stack.Push((children[i], parent, dynamic));
 	}
 
-	/// <summary>
-	/// Decides whether a block outside animated and physics subtrees spawns as a static toy.
-	/// </summary>
-	/// <remarks>
-	/// With <c>static_by_default</c> (the default) every such block is static: exporters write <c>"Static": false</c> for
-	/// blocks that never move, so the property only counts with <c>honor_static_property</c>. Without
-	/// <c>static_by_default</c>, ProjectMER's rule applies (only <c>"Static": true</c> is static).
-	/// </remarks>
-	private static bool IsStaticBlock(SchematicBlockData block)
-	{
-		bool? property = block.StaticProperty;
-		if (Config.StaticByDefault)
-			return !(Config.HonorStaticProperty && property == false);
+	private bool IsStaticBlock(SchematicBlockData block) => SchematicOptimizer.IsStaticBlock(block, _settings.StaticByDefault, _settings.HonorStaticProperty);
 
-		return property == true;
-	}
-
-	private Transform CreateAnchor(SchematicBlockData block, Transform parent)
+	private static Transform CreateAnchor(SchematicBlockData block, Transform parent, Quaternion localRotation)
 	{
 		Transform anchor = new GameObject(block.Name).transform;
 		anchor.SetParent(parent, false);
-		anchor.SetLocalPositionAndRotation(block.Position, Quaternion.Euler(block.Rotation));
+		anchor.SetLocalPositionAndRotation(block.Position, localRotation);
 		anchor.localScale = block.EffectiveScale;
 		return anchor;
 	}
@@ -481,7 +821,20 @@ public class SchematicObject : MonoBehaviour
 		{
 			case BlockOutput.Primitive:
 				{
-					block.GetPrimitive(out PrimitiveType primitiveType, out Color color, out _);
+					// The plan parsed type and colour on the worker; only named colours need Unity's parser.
+					int source = record.Index >= 0 ? record.Index : record.SourceIndex;
+					PrimitiveType primitiveType;
+					Color color;
+					if (source >= 0 && _plan.ColorKnown[source])
+					{
+						primitiveType = _plan.PrimitiveTypes[source];
+						color = _plan.Colors[source];
+					}
+					else
+					{
+						block.GetPrimitive(out primitiveType, out color, out _);
+					}
+
 					LabApi.Features.Wrappers.PrimitiveObjectToy? toy = ToyFactory.CreatePrimitive(position, rotation, scale, primitiveType, color, record.Flags, isStatic, SpawnGroup);
 					if (toy == null)
 						return null;
@@ -493,6 +846,7 @@ public class SchematicObject : MonoBehaviour
 
 			case BlockOutput.Light:
 				{
+					ReleaseLightReservation();
 					block.GetLight(out Color color, out float intensity, out float range, out bool shadows, out LightType lightType);
 					if (lightType != LightType.Point)
 						UnsupportedContent.Adapt($"{lightType} lights", "spawned as point lights; Carl Mod's light toy has no type, shape or spot angles");
@@ -578,7 +932,7 @@ public class SchematicObject : MonoBehaviour
 		if (scratch.parent != record.Parent)
 			scratch.SetParent(record.Parent, false);
 
-		scratch.SetLocalPositionAndRotation(block.Position, Quaternion.Euler(block.Rotation));
+		scratch.SetLocalPositionAndRotation(block.Position, record.LocalRotation);
 		scratch.localScale = block.EffectiveScale;
 		scratch.GetPositionAndRotation(out position, out rotation);
 		scale = scratch.lossyScale;
@@ -608,27 +962,50 @@ public class SchematicObject : MonoBehaviour
 			_scratch.SetParent(null, false);
 	}
 
+	/// <summary>
+	/// Applies <c>max_lights</c> to the plan's lights and reserves the admitted ones until they are created.
+	/// </summary>
 	private bool[] AdmitLights()
 	{
-		List<SchematicBlockData> blocks = Data.Blocks;
+		List<SchematicBlockData> blocks = _data.Blocks;
 		List<int> indices = [];
 		List<float> strengths = [];
 		for (int i = 0; i < blocks.Count; i++)
 		{
-			if (Plan.Outputs[i] != BlockOutput.Light)
+			if (_plan.Outputs[i] != BlockOutput.Light)
 				continue;
 
-			blocks[i].GetLight(out _, out float intensity, out float range, out _, out _);
+			blocks[i].ReadLightStrength(out float intensity, out float range);
 			indices.Add(i);
 			strengths.Add(intensity * range);
 		}
 
 		bool[] admitted = new bool[blocks.Count];
-		bool[] result = Budget.AdmitLights(strengths);
+		bool[] result = Budget.AdmitLights(strengths, true, out int admittedCount);
+		_reservedLights = admittedCount;
+		_reservationGeneration = Budget.Generation;
 		for (int i = 0; i < indices.Count; i++)
 			admitted[indices[i]] = result[i];
 
 		return admitted;
+	}
+
+	private void ReleaseLightReservation()
+	{
+		if (_reservedLights <= 0)
+			return;
+
+		_reservedLights--;
+		Budget.ReleaseLights(1, _reservationGeneration);
+	}
+
+	private void ReleaseLightReservations()
+	{
+		if (_reservedLights <= 0)
+			return;
+
+		Budget.ReleaseLights(_reservedLights, _reservationGeneration);
+		_reservedLights = 0;
 	}
 
 	/// <summary>
@@ -709,12 +1086,16 @@ public class SchematicObject : MonoBehaviour
 
 	private void SetStatic(bool value)
 	{
-		if (IsStatic == value)
+		EnsureSpawned();
+		if (!IsSpawned || IsStatic == value)
 			return;
 
 		if (!value)
 		{
 			_forcedDynamic = true;
+
+			// Merged and duplicate blocks only make sense while nothing moves.
+			Unmerge();
 
 			// Every toy needs an anchor to follow.
 			foreach (BlockRecord record in _records)
@@ -722,7 +1103,7 @@ public class SchematicObject : MonoBehaviour
 				if (record.Anchor != null || record.Toy == null)
 					continue;
 
-				record.Anchor = CreateAnchor(record.Data, record.Parent);
+				record.Anchor = CreateAnchor(record.Data, record.Parent, record.LocalRotation);
 				ObjectFromId[record.Data.ObjectId] = record.Anchor;
 				_attachedBlocks.Add(record.Anchor.gameObject);
 			}
@@ -765,8 +1146,60 @@ public class SchematicObject : MonoBehaviour
 		ResyncNow();
 	}
 
+	/// <summary>
+	/// Replaces merged blocks by their sources and networks removed duplicates again, each on its own anchor.
+	/// </summary>
+	private void Unmerge()
+	{
+		if (_unmerged || _plan == null || _plan.StaticOnlyDrops.Count == 0)
+			return;
+
+		_unmerged = true;
+		for (int i = _records.Count - 1; i >= 0; i--)
+		{
+			BlockRecord record = _records[i];
+			if (record.Index >= 0)
+				continue;
+
+			if (record.Networked != null)
+			{
+				_attachedBlocks.Remove(record.Networked);
+				SpawnQueue.Destroy(record.Networked);
+			}
+
+			_records.RemoveAt(i);
+		}
+
+		try
+		{
+			foreach (int index in _plan.StaticOnlyDrops)
+			{
+				SchematicBlockData block = _data.Blocks[index];
+				if (!ObjectFromId.TryGetValue(block.ObjectId, out Transform anchor) || anchor == null || anchor == transform)
+					continue;
+
+				BlockRecord record = new(block, index, BlockOutput.Primitive, anchor.parent, anchor, anchor.localRotation) { Flags = _plan.Flags[index] };
+				GameObject? networked = CreateNetworked(record);
+				if (networked == null)
+					continue;
+
+				networked.name = block.Name;
+				record.Networked = networked;
+				_records.Add(record);
+				_attachedBlocks.Add(networked);
+			}
+		}
+		finally
+		{
+			ReleaseScratch();
+		}
+	}
+
 	private void OnRootMoved()
 	{
+		if (SpawnGroup == null)
+			return;
+
 		SpawnGroup.Anchor = transform.position;
 		if (_resyncScheduled || _records.Count == CountFollowers())
 			return;
@@ -786,19 +1219,6 @@ public class SchematicObject : MonoBehaviour
 		}
 
 		return count;
-	}
-
-	private Dictionary<int, RuntimeAnimatorController> LoadAnimators()
-	{
-		Dictionary<int, RuntimeAnimatorController> result = [];
-		foreach (int index in Plan.AnimatedBlocks)
-		{
-			SchematicBlockData block = Data.Blocks[index];
-			if (TryGetAnimatorController(block.AnimatorName, out RuntimeAnimatorController controller))
-				result[block.ObjectId] = controller;
-		}
-
-		return result;
 	}
 
 	private bool TryGetAnimatorController(string animatorName, out RuntimeAnimatorController animatorController)
@@ -842,39 +1262,7 @@ public class SchematicObject : MonoBehaviour
 		}
 	}
 
-	private Dictionary<int, SerializableRigidbody> LoadRigidbodies()
-	{
-		string rigidbodyPath = Path.Combine(DirectoryPath, $"{Name}-Rigidbodies.json");
-		if (!File.Exists(rigidbodyPath))
-			return [];
-
-		try
-		{
-			Dictionary<int, SerializableRigidbody> all = SchematicJson.ReadCached<Dictionary<int, SerializableRigidbody>>(rigidbodyPath);
-			Dictionary<int, SerializableRigidbody> reachable = [];
-			HashSet<int> ids = [];
-			foreach (List<int> children in Plan.Children.Values)
-			{
-				foreach (int index in children)
-					ids.Add(Data.Blocks[index].ObjectId);
-			}
-
-			foreach (KeyValuePair<int, SerializableRigidbody> pair in all)
-			{
-				if (ids.Contains(pair.Key))
-					reachable[pair.Key] = pair.Value;
-			}
-
-			return reachable;
-		}
-		catch (Exception e)
-		{
-			Logger.Warn($"Schematic \"{Name}\": failed to read {Name}-Rigidbodies.json: {e.Message}");
-			return [];
-		}
-	}
-
-	private void LogSummary(double buildMs)
+	private void LogSummary(double buildMs, int slices, double worstSliceMs)
 	{
 		int primitives = 0, lights = 0, pickups = 0, workstations = 0, transparent = 0, dynamic = 0;
 		foreach (BlockRecord record in _records)
@@ -905,10 +1293,19 @@ public class SchematicObject : MonoBehaviour
 			}
 		}
 
-		Logger.Info($"Schematic \"{Name}\": {Data.Blocks.Count} blocks ({Plan.ReachableBlocks} reachable). ProjectMER would network {Plan.ProjectMerNetworked} objects; " +
-			$"this port networks {_records.Count} (primitives {primitives}, lights {lights}, pickups {pickups}, workstations {workstations}; transparent {transparent}, dynamic {dynamic}). " +
-			$"Not networked: {Plan.Anchors} empty, invisible or unsupported blocks (of which {Plan.DroppedInvisible} invisible primitives, {Plan.DroppedZeroScale} zero-scale). " +
-			$"Animated/physics subtrees: {(_dynamicRoots.Count == 0 ? "none" : _dynamicRoots.Count + " roots")}; server build {buildMs:F1} ms.");
+		StringBuilder sb = new();
+		sb.Append($"Schematic \"{Name}\": {_data.Blocks.Count} blocks ({_plan.ReachableBlocks} reachable). ProjectMER would network {_plan.ProjectMerNetworked} objects; ");
+		sb.Append($"this port networks {_records.Count} (primitives {primitives}, lights {lights}, pickups {pickups}, workstations {workstations}; transparent {transparent}, dynamic {dynamic}). ");
+		sb.Append("Optimizer steps:");
+		for (int i = 1; i < _plan.Steps.Count; i++)
+			sb.Append(i == 1 ? " " : ", ").Append(_plan.Steps[i].Networked);
+
+		sb.Append($" ({_plan.Anchors} blocks not networked: {_plan.Empties} empty, {_plan.DroppedInvisible} invisible, {_plan.DroppedZeroScale} zero-scale, {_plan.LightsCapped} lights over max_lights_per_schematic, {_plan.Duplicates} duplicates, {_plan.MergedSources} merged into {_plan.MergedBlocks}). ");
+		sb.Append($"Animated/physics subtrees: {(_dynamicRoots.Count == 0 ? "none" : _dynamicRoots.Count + " roots")}. ");
+		sb.Append(_planWasCached ? "Plan cached; " : $"Parse {_plan.ParseMilliseconds:F1} ms and plan {_plan.PlanMilliseconds:F1} ms on a worker thread; ");
+		double readySeconds = (Stopwatch.GetTimestamp() - _loadStart) / (double)Stopwatch.Frequency;
+		sb.Append($"server build {buildMs:F1} ms over {slices} frame slices (slowest {worstSliceMs:F2} ms), all server objects {readySeconds:F2} s after the load.");
+		Logger.Info(sb.ToString());
 
 		if (transparent > TransparentWarnThreshold)
 			Logger.Warn($"Schematic \"{Name}\" has {transparent} transparent primitives (alpha below 1 or invisible colliders). Each one still renders with blending, which costs fill rate on phones.");
@@ -925,7 +1322,17 @@ public class SchematicObject : MonoBehaviour
 
 	private void OnDestroy()
 	{
+		bool wasSpawned = IsSpawned;
+		_phase = BuildPhase.Failed;
 		SpawnGroup?.Cancel();
+		ReleaseLightReservations();
+
+		if (_report != null)
+		{
+			UnsupportedContent.Resume(_report);
+			_report.Dispose();
+			_report = null;
+		}
 
 		foreach (BlockRecord record in _records)
 		{
@@ -940,15 +1347,20 @@ public class SchematicObject : MonoBehaviour
 
 		_records.Clear();
 		AnimationController.Dictionary.Remove(this);
-		Schematic.OnSchematicDestroyed(new(this, Name));
+
+		// Spawned and destroyed are raised in pairs; a schematic destroyed while loading was never announced.
+		if (wasSpawned)
+			Schematic.OnSchematicDestroyed(new(this, Name));
 	}
 
-	private static Config Config => ProjectMER.Singleton.Config!;
+	private static Configs.Config Config => ProjectMER.Singleton.Config!;
 
 	private readonly List<GameObject> _attachedBlocks = [];
 	private readonly List<NetworkIdentity> _networkIdentities = [];
 	private readonly List<AdminToyBase> _adminToyBases = [];
 	private readonly List<BlockRecord> _records = [];
+	private readonly Stack<(int Index, Transform Parent, bool Dynamic)> _stack = new();
+	private readonly Dictionary<int, RuntimeAnimatorController> _animators = [];
 
 	private static Transform? _scratch;
 
@@ -959,13 +1371,54 @@ public class SchematicObject : MonoBehaviour
 	private bool _resyncScheduled;
 	private float _lastResync = float.NegativeInfinity;
 
+	private SchematicObjectDataList _data;
+	private SchematicBuildPlan _plan;
+	private OptimizerSettings _settings;
+	private BuildPhase _phase;
+	private SchematicLoadJob? _dataJob;
+	private SchematicLoadJob? _planJob;
+	private bool _raiseSpawning;
+	private bool _stepping;
+	private bool _planWasCached;
+	private bool _unmerged;
+	private IDisposable? _report;
+	private bool[] _lightAdmitted = [];
+	private int _reservedLights;
+	private int _reservationGeneration;
+	private int _animatorIndex;
+	private int _addedIndex;
+	private long _loadStart;
+	private double _buildMs;
+	private double _worstSliceMs;
+	private int _buildSlices;
+
 	/// <summary>
-	/// A schematic block that produced a networked object.
+	/// Where the build is. Ordered: every phase before <see cref="Spawned"/> is still in progress.
 	/// </summary>
-	private sealed class BlockRecord(SchematicBlockData data, int index, BlockOutput output, Transform parent, Transform? anchor)
+	private enum BuildPhase : byte
+	{
+		NotStarted,
+		LoadingData,
+		LoadingPlan,
+		Prepare,
+		Animators,
+		Blocks,
+		AddedBlocks,
+		Finish,
+		Spawned,
+		Failed,
+	}
+
+	/// <summary>
+	/// A schematic block that produced (or may produce) a networked object.
+	/// </summary>
+	private sealed class BlockRecord(SchematicBlockData data, int index, BlockOutput output, Transform parent, Transform? anchor, Quaternion localRotation)
 	{
 		public SchematicBlockData Data { get; } = data;
 
+		/// <summary>
+		/// Gets the block index in the data, or -1 for blocks the optimizer added.
+		/// </summary>
 		public int Index { get; } = index;
 
 		public BlockOutput Output { get; } = output;
@@ -974,6 +1427,11 @@ public class SchematicObject : MonoBehaviour
 		/// Gets the transform the block's local transform is relative to.
 		/// </summary>
 		public Transform Parent { get; } = parent;
+
+		/// <summary>
+		/// Gets the local rotation (exact for merged blocks; <see cref="SchematicBlockData.Rotation"/> holds Euler angles).
+		/// </summary>
+		public Quaternion LocalRotation { get; } = localRotation;
 
 		/// <summary>
 		/// Gets or sets the block's own anchor, if it has one.
@@ -993,6 +1451,11 @@ public class SchematicObject : MonoBehaviour
 		/// Gets or sets whether the block is in an animated or physics subtree.
 		/// </summary>
 		public bool InDynamicSubtree { get; set; }
+
+		/// <summary>
+		/// Gets or sets the first source block of a merged block (its type and colour), or -1.
+		/// </summary>
+		public int SourceIndex { get; set; } = -1;
 
 		/// <summary>
 		/// Gets or sets whether <see cref="SchematicSync"/> moves the toy (it follows or drives its anchor).

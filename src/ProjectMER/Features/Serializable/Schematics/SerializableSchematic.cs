@@ -2,8 +2,8 @@ using LabApi.Features.Wrappers;
 using ProjectMER.Events.Arguments;
 using ProjectMER.Events.Handlers;
 using ProjectMER.Features.Extensions;
-using ProjectMER.Features.Mobile;
 using ProjectMER.Features.Objects;
+using ProjectMER.Features.Serialization;
 using UnityEngine;
 
 namespace ProjectMER.Features.Serializable.Schematics;
@@ -12,9 +12,17 @@ namespace ProjectMER.Features.Serializable.Schematics;
 /// A schematic placed in a map.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The root is a plain server GameObject (ProjectMER used an invisible networked primitive, which Carl Mod would render).
-/// Schematic data comes from the parse cache; <see cref="Schematic.SchematicSpawning"/> handlers receive a copy they may
-/// change. Editing the root's position, rotation or scale resends static blocks in place.
+/// It is returned at once; the schematic is parsed and planned on a worker thread and built over the next frames
+/// (<see cref="SchematicObject"/>). Editing the root's position, rotation or scale resends static blocks in place.
+/// </para>
+/// <para>
+/// <see cref="Schematic.SchematicSpawning"/> handlers receive a copy of the data they may change. When the file is already
+/// parsed (cached and unchanged) the event is raised here and cancelling it returns <see langword="null"/>, as in
+/// ProjectMER. Otherwise it is raised once the worker has parsed the file, and cancelling it destroys the root returned
+/// earlier.
+/// </para>
 /// </remarks>
 public class SerializableSchematic : SerializableObject
 {
@@ -37,40 +45,41 @@ public class SerializableSchematic : SerializableObject
 			return instance;
 		}
 
-		if (!MapUtils.TryGetSchematicDataByName(SchematicName, out SchematicObjectDataList data))
-			return null;
-
-		if (Schematic.HasSchematicSpawningSubscribers)
+		if (!SchematicLoader.TryResolve(SchematicName, out string directory, out string jsonPath, out string error))
 		{
-			// Handlers may change the data; the cached instance must stay untouched.
-			SchematicSpawningEventArgs ev = new(Copy(data), SchematicName);
-			Schematic.OnSchematicSpawning(ev);
-			data = ev.Data;
-
-			if (!ev.IsAllowed || data == null)
-				return null;
+			Logger.Error(error);
+			return null;
 		}
 
-		GameObject root = new($"CustomSchematic-{SchematicName}");
-		root.transform.SetPositionAndRotation(position, rotation);
-		root.transform.localScale = Scale;
-		root.AddComponent<SchematicObject>().Init(data, Mobile.SpawnGroup.Current);
+		Mobile.SpawnGroup? group = Mobile.SpawnGroup.Current;
+		if (SchematicLoader.TryGetCached(directory, jsonPath, out SchematicObjectDataList data))
+		{
+			if (Schematic.HasSchematicSpawningSubscribers)
+			{
+				// Handlers may change the data; the cached instance must stay untouched.
+				SchematicSpawningEventArgs ev = new(data.Clone(), SchematicName);
+				Schematic.OnSchematicSpawning(ev);
+				data = ev.Data;
 
+				if (!ev.IsAllowed || data == null)
+					return null;
+			}
+
+			GameObject cachedRoot = CreateRoot(position, rotation);
+			cachedRoot.AddComponent<SchematicObject>().Init(data, group);
+			return cachedRoot;
+		}
+
+		GameObject root = CreateRoot(position, rotation);
+		root.AddComponent<SchematicObject>().InitFromFile(SchematicName, directory, jsonPath, group);
 		return root;
 	}
 
-	private static SchematicObjectDataList Copy(SchematicObjectDataList data)
+	private GameObject CreateRoot(Vector3 position, Quaternion rotation)
 	{
-		SchematicObjectDataList copy = new()
-		{
-			Path = data.Path,
-			RootObjectId = data.RootObjectId,
-			Blocks = new List<SchematicBlockData>(data.Blocks.Count),
-		};
-
-		foreach (SchematicBlockData block in data.Blocks)
-			copy.Blocks.Add(block.Clone());
-
-		return copy;
+		GameObject root = new($"CustomSchematic-{SchematicName}");
+		root.transform.SetPositionAndRotation(position, rotation);
+		root.transform.localScale = Scale;
+		return root;
 	}
 }

@@ -8,6 +8,7 @@ using ProjectMER.Configs;
 using ProjectMER.Events.Handlers.Internal;
 using ProjectMER.Features;
 using ProjectMER.Features.Mobile;
+using ProjectMER.Features.ToolGun;
 
 namespace ProjectMER;
 
@@ -77,6 +78,7 @@ public class ProjectMER : Plugin<Config>
 		_harmony.PatchAll(typeof(ProjectMER).Assembly);
 
 		SpawnQueue.Start();
+		MerVisibility.Start();
 
 		if (Config!.EnableFileSystemWatcher)
 		{
@@ -119,6 +121,8 @@ public class ProjectMER : Plugin<Config>
 		_mapFileSystemWatcher?.Dispose();
 
 		MainThreadQueue.Stop();
+		ToolGunLoop.Stop();
+		MerVisibility.Stop();
 		SpawnQueue.Stop();
 	}
 

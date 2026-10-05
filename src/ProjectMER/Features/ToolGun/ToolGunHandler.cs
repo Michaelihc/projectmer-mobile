@@ -13,6 +13,10 @@ namespace ProjectMER.Features.ToolGun;
 
 public static class ToolGunHandler
 {
+	private const float MaxDistance = 100f;
+
+	private static readonly RaycastHit[] Hits = new RaycastHit[32];
+
 	public static Dictionary<Player, MapEditorObject> PlayerSelectedObjectDict { get; private set; } = [];
 
 	public static void CreateObject(Player player, ToolGunObjectType objectType, string schematicName = "")
@@ -97,11 +101,26 @@ public static class ToolGunHandler
 			IndicatorObject.TrySpawnOrUpdateIndicator(mapEditorObject);
 		}
 
+		// Give a new non-collidable primitive its editing trigger soon.
+		EditingColliders.MarkDirty();
 		return map.SpawnedObjects.Count > before;
 	}
 
 	public static void DeleteObject(MapEditorObject mapEditorObject)
 	{
+		// End grabs of the object and clear selections that point at it, so no box or grab outlives it.
+		foreach (ToolGunState state in ToolGunState.Values)
+		{
+			if (state.Grab != null && ReferenceEquals(state.Grab.Target, mapEditorObject))
+				state.Grab.End(commit: false);
+		}
+
+		foreach (KeyValuePair<Player, MapEditorObject> pair in PlayerSelectedObjectDict)
+		{
+			if (ReferenceEquals(pair.Value, mapEditorObject) && ToolGunState.TryGet(pair.Key, out ToolGunState state))
+				state.Box.Destroy();
+		}
+
 		IndicatorObject.TryDestroyIndicator(mapEditorObject);
 
 		MapSchematic map = MapUtils.LoadedMaps[mapEditorObject.MapName];
@@ -122,16 +141,28 @@ public static class ToolGunHandler
 		if (!Raycast(player, out RaycastHit hit))
 			return false;
 
-		if (hit.transform.TryGetComponentInParent(out MerBlockLink link))
-			mapEditorObject = link.ResolveOwner()!;
+		return TryResolve(hit.transform, out mapEditorObject);
+	}
 
-		if (mapEditorObject == null && !hit.transform.TryGetComponentInParent(out mapEditorObject))
+	/// <summary>
+	/// Resolves a hit transform to the map object that owns it.
+	/// </summary>
+	public static bool TryResolve(Transform transform, out MapEditorObject mapEditorObject)
+	{
+		mapEditorObject = null!;
+		if (transform == null)
 			return false;
 
-		if (mapEditorObject is IndicatorObject indicatorObject)
-			mapEditorObject = IndicatorObject.Dictionary[indicatorObject];
+		if (transform.TryGetComponentInParent(out MerBlockLink link))
+			mapEditorObject = link.ResolveOwner()!;
 
-		return mapEditorObject != null;
+		if (mapEditorObject == null && !transform.TryGetComponentInParent(out mapEditorObject))
+			return false;
+
+		if (mapEditorObject is IndicatorObject indicatorObject && IndicatorObject.Dictionary.TryGetValue(indicatorObject, out MapEditorObject owner))
+			mapEditorObject = owner;
+
+		return mapEditorObject != null && mapEditorObject is not IndicatorObject;
 	}
 
 	public static bool TryGetSelectedMapObject(Player player, out MapEditorObject mapEditorObject)
@@ -145,15 +176,22 @@ public static class ToolGunHandler
 		return PlayerSelectedObjectDict.TryGetValue(player, out mapEditorObject) && mapEditorObject != null;
 	}
 
+	/// <summary>
+	/// Selects an object for a player (<see langword="null"/> deselects) and updates the player's selection box.
+	/// </summary>
 	public static void SelectObject(Player player, MapEditorObject mapEditorObject)
 	{
-		if (!PlayerSelectedObjectDict.ContainsKey(player))
-		{
-			PlayerSelectedObjectDict.Add(player, mapEditorObject);
-			return;
-		}
-
 		PlayerSelectedObjectDict[player] = mapEditorObject;
+
+		if (player is null || player.IsHost)
+			return;
+
+		ToolGunState state = ToolGunState.Get(player);
+		if (state.Grab != null && !ReferenceEquals(state.Grab.Target, mapEditorObject))
+			state.Grab.End(commit: true);
+
+		state.Box.Sync(state);
+		ToolGunHud.Refresh(state);
 	}
 
 	public static bool TryGetObjectById(string id, out MapEditorObject mapEditorObject)
@@ -187,7 +225,36 @@ public static class ToolGunHandler
 		return Raycast(camera.position, camera.forward, out hit);
 	}
 
-	public static bool Raycast(Vector3 origin, Vector3 direction, out RaycastHit hit) => Physics.Raycast(origin, direction, out hit, 100f, ToolGunMask.Mask);
+	/// <summary>
+	/// Casts the tool gun ray: the nearest solid surface, or a nearer MER trigger (indicators, teleports and the editing
+	/// triggers of non-collidable primitives). Other triggers on the tool gun layers are ignored.
+	/// </summary>
+	public static bool Raycast(Vector3 origin, Vector3 direction, out RaycastHit hit)
+	{
+		int mask = ToolGunMask.Mask;
+		bool found = Physics.Raycast(origin, direction, out hit, MaxDistance, mask, QueryTriggerInteraction.Ignore);
+		float limit = found ? hit.distance : MaxDistance;
+
+		int count = Physics.RaycastNonAlloc(origin, direction, Hits, limit, mask, QueryTriggerInteraction.Collide);
+		for (int i = 0; i < count; i++)
+		{
+			RaycastHit candidate = Hits[i];
+			Collider collider = candidate.collider;
+			if (collider == null || !collider.isTrigger || (found && candidate.distance >= hit.distance) || !IsMerTrigger(collider))
+				continue;
+
+			hit = candidate;
+			found = true;
+		}
+
+		return found;
+	}
+
+	private static bool IsMerTrigger(Collider collider)
+	{
+		Transform transform = collider.transform;
+		return transform.TryGetComponentInParent(out MerBlockLink _) || transform.TryGetComponentInParent(out MapEditorObject _);
+	}
 
 	private static readonly CachedLayerMask ToolGunMask = new("Default", "Door", "CCTV");
 

@@ -76,6 +76,7 @@ public class GenericEventsHandler : CustomEventsHandler
 		MapUtils.LoadedMaps.Clear();
 		SpawnQueue.Clear();
 		MerVisibility.Reset();
+		MerWaypoints.Reset();
 		Budget.Reset();
 		AnimationController.Dictionary.Clear();
 		IndicatorObject.ResetState();

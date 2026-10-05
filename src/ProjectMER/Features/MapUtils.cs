@@ -115,6 +115,34 @@ public static class MapUtils
 	}
 
 	/// <summary>
+	/// Checks that a schematic file exists (moving a bare <c>Schematics/&lt;name&gt;.json</c> into its folder, as
+	/// <see cref="GetSchematicDataByName"/> does) without parsing it, so commands can validate a name without a hitch.
+	/// </summary>
+	/// <param name="schematicName">The schematic name.</param>
+	/// <param name="error">The reason when it does not exist.</param>
+	public static bool SchematicFileExists(string schematicName, out string error)
+	{
+		error = string.Empty;
+		string schematicDirPath = Path.Combine(ProjectMER.SchematicsDir, schematicName);
+		string schematicJsonPath = Path.Combine(schematicDirPath, $"{schematicName}.json");
+		string misplacedSchematicJsonPath = schematicDirPath + ".json";
+		if (File.Exists(schematicJsonPath))
+			return true;
+
+		if (File.Exists(misplacedSchematicJsonPath))
+		{
+			Directory.CreateDirectory(schematicDirPath);
+			File.Move(misplacedSchematicJsonPath, schematicJsonPath);
+			return true;
+		}
+
+		error = Directory.Exists(schematicDirPath)
+			? $"Failed to load schematic data: File {schematicName}.json does not exist!"
+			: $"Failed to load schematic data: Directory {schematicName} does not exist!";
+		return false;
+	}
+
+	/// <summary>
 	/// Gets a schematic's data. The result is cached while the file is unchanged and shared between spawns; treat it as
 	/// read-only.
 	/// </summary>

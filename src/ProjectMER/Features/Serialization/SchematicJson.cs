@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Newtonsoft.Json;
 using ProjectMER.Features.Serializable.Schematics;
 using UnityEngine;
@@ -8,11 +9,18 @@ namespace ProjectMER.Features.Serialization;
 /// Schematic JSON reading with Newtonsoft.Json (Carl Mod does not ship Utf8Json), plus a parse cache.
 /// </summary>
 /// <remarks>
+/// <para>
 /// <see cref="SchematicBlockData.Properties"/> is filled with the same value shapes Utf8Json produced:
 /// <see cref="Dictionary{TKey,TValue}"/> of <see cref="string"/> to <see cref="object"/> for objects,
 /// <see cref="List{T}"/> of <see cref="object"/> for arrays, <see cref="long"/>/<see cref="double"/> for numbers,
-/// <see cref="string"/>, <see cref="bool"/> and <see langword="null"/>. Parsed schematics are cached by path, file
-/// length and write time; ProjectMER re-read and re-parsed the file on every spawn.
+/// <see cref="string"/>, <see cref="bool"/> and <see langword="null"/>. Parsed files are cached by path, file length and
+/// write time; ProjectMER re-read and re-parsed the file on every spawn. Derived data (build plans) is cached with the
+/// parse result and dropped with it when the file changes.
+/// </para>
+/// <para>
+/// The cache is main-thread only. <see cref="SchematicLoader"/> parses on worker threads with their own serializer and
+/// stores the result here when the main thread picks it up.
+/// </para>
 /// </remarks>
 public static class SchematicJson
 {
@@ -31,18 +39,15 @@ public static class SchematicJson
 
 	private static readonly Dictionary<string, CacheEntry> Cache = new(StringComparer.OrdinalIgnoreCase);
 
-	/// <summary>
-	/// Deserializes JSON text.
-	/// </summary>
-	public static T Deserialize<T>(string json)
-	{
-		using StringReader stringReader = new(json);
-		using JsonTextReader reader = new(stringReader);
-		return Serializer.Deserialize<T>(reader)!;
-	}
+	private static ConditionalWeakTable<object, CacheEntry> _byValue = new();
 
 	/// <summary>
-	/// Reads a file, reusing the parsed result while the file's length and write time are unchanged.
+	/// Deserializes JSON text (main thread).
+	/// </summary>
+	public static T Deserialize<T>(string json) => Deserialize<T>(json, Serializer);
+
+	/// <summary>
+	/// Reads a file, reusing the parsed result while the file's length and write time are unchanged (main thread).
 	/// </summary>
 	/// <param name="path">The file path.</param>
 	/// <returns>The cached or freshly parsed value. Treat it as read-only.</returns>
@@ -50,51 +55,124 @@ public static class SchematicJson
 		where T : class
 	{
 		FileInfo file = new(path);
-		long length = file.Length;
-		DateTime writeTime = file.LastWriteTimeUtc;
-
-		if (Cache.TryGetValue(path, out CacheEntry entry) && entry.Length == length && entry.WriteTime == writeTime && entry.Value is T cached)
+		FileStamp stamp = new(file.Length, file.LastWriteTimeUtc);
+		if (TryGetCached(path, stamp, out T cached))
 			return cached;
 
-		T value = Deserialize<T>(File.ReadAllText(path));
-		Cache[path] = new CacheEntry(length, writeTime, value);
+		T value = DeserializeFile<T>(path, Serializer);
+		Store(path, stamp, value);
 		return value;
-	}
-
-	/// <summary>
-	/// Gets or creates data derived from a cached parse result (for example the simplified build plan), dropped
-	/// together with the parse result when the file changes.
-	/// </summary>
-	internal static TDerived GetDerived<TSource, TDerived>(TSource source, Func<TSource, TDerived> factory)
-		where TSource : class
-		where TDerived : class
-	{
-		foreach (CacheEntry entry in Cache.Values)
-		{
-			if (!ReferenceEquals(entry.Value, source))
-				continue;
-
-			if (entry.Derived is TDerived derived)
-				return derived;
-
-			derived = factory(source);
-			entry.Derived = derived;
-			return derived;
-		}
-
-		return factory(source);
 	}
 
 	/// <summary>
 	/// Drops every cached file.
 	/// </summary>
-	public static void ClearCache() => Cache.Clear();
-
-	private sealed class CacheEntry(long length, DateTime writeTime, object value)
+	public static void ClearCache()
 	{
-		public long Length { get; } = length;
+		Cache.Clear();
+		_byValue = new ConditionalWeakTable<object, CacheEntry>();
+	}
 
-		public DateTime WriteTime { get; } = writeTime;
+	/// <summary>
+	/// Creates a serializer for one worker-thread job (serializer instances are not shared across threads).
+	/// </summary>
+	internal static JsonSerializer CreateSerializer() => JsonSerializer.Create(Settings);
+
+	/// <summary>
+	/// Deserializes JSON text with a given serializer.
+	/// </summary>
+	internal static T Deserialize<T>(string json, JsonSerializer serializer)
+	{
+		using StringReader stringReader = new(json);
+		using JsonTextReader reader = new(stringReader);
+		return serializer.Deserialize<T>(reader)!;
+	}
+
+	/// <summary>
+	/// Deserializes a file by streaming it (no intermediate string the size of the file).
+	/// </summary>
+	internal static T DeserializeFile<T>(string path, JsonSerializer serializer)
+	{
+		using StreamReader streamReader = new(path, System.Text.Encoding.UTF8, true, 64 * 1024);
+		using JsonTextReader reader = new(streamReader);
+		return serializer.Deserialize<T>(reader)!;
+	}
+
+	/// <summary>
+	/// Gets a cached value whose file still has the given stamp.
+	/// </summary>
+	internal static bool TryGetCached<T>(string path, FileStamp stamp, out T value)
+		where T : class
+	{
+		if (Cache.TryGetValue(path, out CacheEntry entry) && entry.Stamp == stamp && entry.Value is T cached)
+		{
+			value = cached;
+			return true;
+		}
+
+		value = null!;
+		return false;
+	}
+
+	/// <summary>
+	/// Caches a parsed value unless an entry with the same stamp exists.
+	/// </summary>
+	/// <returns>Whether <paramref name="value"/> is now the cached instance.</returns>
+	internal static bool Store(string path, FileStamp stamp, object value)
+	{
+		if (Cache.TryGetValue(path, out CacheEntry existing) && existing.Stamp == stamp)
+			return ReferenceEquals(existing.Value, value);
+
+		CacheEntry entry = new(stamp, value);
+		Cache[path] = entry;
+		_byValue.Remove(value);
+		_byValue.Add(value, entry);
+		return true;
+	}
+
+	/// <summary>
+	/// Gets the table of data derived from a cached value (for example build plans by settings), or
+	/// <see langword="null"/> when <paramref name="source"/> is not a cached value.
+	/// </summary>
+	internal static Dictionary<TKey, TValue>? GetDerivedTable<TKey, TValue>(object source)
+	{
+		if (!_byValue.TryGetValue(source, out CacheEntry entry))
+			return null;
+
+		if (entry.Derived is not Dictionary<TKey, TValue> table)
+			entry.Derived = table = [];
+
+		return table;
+	}
+
+	/// <summary>
+	/// The length and write time of a file, which together identify a cached parse.
+	/// </summary>
+	/// <param name="Length">The file length, or -1 when the file does not exist.</param>
+	/// <param name="WriteTime">The last write time (UTC).</param>
+	internal readonly record struct FileStamp(long Length, DateTime WriteTime)
+	{
+		/// <summary>
+		/// The stamp of a missing file.
+		/// </summary>
+		public static readonly FileStamp Missing = new(-1, default);
+
+		/// <summary>
+		/// Gets the stamp of a file.
+		/// </summary>
+		public static FileStamp Of(string? path)
+		{
+			if (path == null)
+				return Missing;
+
+			FileInfo file = new(path);
+			return file.Exists ? new FileStamp(file.Length, file.LastWriteTimeUtc) : Missing;
+		}
+	}
+
+	private sealed class CacheEntry(FileStamp stamp, object value)
+	{
+		public FileStamp Stamp { get; } = stamp;
 
 		public object Value { get; } = value;
 

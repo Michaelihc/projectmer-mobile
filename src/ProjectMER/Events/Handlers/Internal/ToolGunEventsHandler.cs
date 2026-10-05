@@ -1,61 +1,38 @@
 using LabApi.Events.Arguments.PlayerEvents;
 using LabApi.Events.CustomHandlers;
-using LabApi.Features.Wrappers;
-using MEC;
 using ProjectMER.Features.Extensions;
-using ProjectMER.Features.Objects;
 using ProjectMER.Features.ToolGun;
 
 namespace ProjectMER.Events.Handlers.Internal;
 
 /// <summary>
-/// Tool gun input and HUD.
+/// Maps the mobile firearm buttons to tool gun actions (docs/projectmer-port-plan.md §4).
 /// </summary>
 /// <remarks>
-/// Phase A port: ProjectMER's mapping (dry fire runs the mode, reload and drop cycle the type), and the hint refreshed every
-/// <c>hud_interval</c> instead of every 0.1 s. The mobile input mapping and change-only HUD of
-/// docs/projectmer-port-plan.md §4 replace this.
+/// <para>
+/// Every input is a request the stock Carl Mod firearm handler already processes, raised by the LabAPI port from
+/// <c>FirearmBasicMessagesHandler.ServerRequestReceived</c> (and <c>Inventory.CmdDropItem</c> for drop):
+/// </para>
+/// <list type="table">
+/// <item><term>Attack (dry fire)</term><description><see cref="OnPlayerDryFiringWeapon"/>: Create or Delete at the crosshair, or
+/// Select while aiming (aim is a toggle on mobile). The request is cancelled.</description></item>
+/// <item><term>Inspect</term><description><see cref="OnPlayerInspectingItem"/>: switches Create/Delete and the flashlight with it.</description></item>
+/// <item><term>Light toggle</term><description><see cref="OnPlayerTogglingWeaponFlashlight"/>: the same switch; the light shows
+/// the mode (on: Create), as in ProjectMER.</description></item>
+/// <item><term>Reload</term><description><see cref="OnPlayerReloadingWeapon"/>: previous schematic or object type; cancelled.</description></item>
+/// <item><term>Throw away (drop)</term><description><see cref="OnPlayerDroppingItem"/>: next schematic or object type; cancelled.</description></item>
+/// </list>
+/// <para>
+/// Aiming is read from the firearm's <c>AdsModule.ServerAds</c> when the attack arrives; <c>AimingWeapon</c> does not exist
+/// in LabAPI, and subscribing to <c>AimedWeapon</c> would make every player's aim requests allocate event arguments, so the
+/// HUD picks the aim state up on its next check instead. Unload requests are cancelled (the tool gun stays empty).
+/// </para>
 /// </remarks>
 public class ToolGunEventsHandler : CustomEventsHandler
 {
-	private static CoroutineHandle _toolGunCoroutine;
+	public override void OnServerWaitingForPlayers() => ResetRound();
 
-	public override void OnServerRoundStarted()
-	{
-		Timing.KillCoroutines(_toolGunCoroutine);
-		_toolGunCoroutine = Timing.RunCoroutine(ToolGunGUI());
-	}
-
-	private static IEnumerator<float> ToolGunGUI()
-	{
-		while (true)
-		{
-			float interval = Math.Max(0.1f, ProjectMER.Singleton?.Config?.HudInterval ?? 0.5f);
-			yield return Timing.WaitForSeconds(interval);
-
-			if (ToolGunItem.ItemDictionary.Count == 0 && ToolGunHandler.PlayerSelectedObjectDict.Count == 0)
-				continue;
-
-			foreach (Player player in Player.List)
-			{
-				if (!player.CurrentItem.IsToolGun(out ToolGunItem _) && !ToolGunHandler.TryGetSelectedMapObject(player, out MapEditorObject _))
-					continue;
-
-				string hud;
-				try
-				{
-					hud = ToolGunUI.GetHintHUD(player);
-				}
-				catch (Exception e)
-				{
-					Logger.Error(e);
-					hud = "ERROR: Check server console";
-				}
-
-				player.SendHint(hud, interval + 0.3f);
-			}
-		}
-	}
+	public override void OnServerRoundRestarted() => ResetRound();
 
 	public override void OnPlayerDryFiringWeapon(PlayerDryFiringWeaponEventArgs ev)
 	{
@@ -72,7 +49,13 @@ public class ToolGunEventsHandler : CustomEventsHandler
 			return;
 
 		ev.IsAllowed = false;
-		toolGun.SelectedObjectToSpawn--;
+		toolGun.Cycle(ev.Player, -1);
+	}
+
+	public override void OnPlayerUnloadingWeapon(PlayerUnloadingWeaponEventArgs ev)
+	{
+		if (ev.FirearmItem.IsToolGun(out ToolGunItem _))
+			ev.IsAllowed = false;
 	}
 
 	public override void OnPlayerDroppingItem(PlayerDroppingItemEventArgs ev)
@@ -81,6 +64,49 @@ public class ToolGunEventsHandler : CustomEventsHandler
 			return;
 
 		ev.IsAllowed = false;
-		toolGun.SelectedObjectToSpawn++;
+		toolGun.Cycle(ev.Player, 1);
+	}
+
+	public override void OnPlayerInspectingItem(PlayerInspectingItemEventArgs ev)
+	{
+		if (!ev.Item.IsToolGun(out ToolGunItem toolGun))
+			return;
+
+		toolGun.ToggleMode(ev.Player);
+	}
+
+	public override void OnPlayerTogglingWeaponFlashlight(PlayerTogglingWeaponFlashlightEventArgs ev)
+	{
+		if (!ev.FirearmItem.IsToolGun(out ToolGunItem toolGun))
+			return;
+
+		// The request applies NewState itself.
+		ev.NewState = toolGun.ToggleMode(ev.Player, syncFlashlight: false);
+	}
+
+	public override void OnPlayerChangedItem(PlayerChangedItemEventArgs ev)
+	{
+		if (!ev.NewItem.IsToolGun(out ToolGunItem _) && !ev.OldItem.IsToolGun(out ToolGunItem _))
+			return;
+
+		// Show the HUD at once, or hide it.
+		ToolGunHud.Refresh(ToolGunState.Get(ev.Player));
+	}
+
+	public override void OnPlayerLeft(PlayerLeftEventArgs ev)
+	{
+		ToolGunState.Remove(ev.Player);
+		ToolGunItem.ForgetOrphans(ev.Player.ReferenceHub);
+		ToolGunHandler.PlayerSelectedObjectDict.Remove(ev.Player);
+	}
+
+	private static void ResetRound()
+	{
+		// The scene change destroyed every tool gun, box and trigger; drop the references.
+		ToolGunLoop.Stop();
+		ToolGunState.Reset();
+		EditingColliders.Reset();
+		ToolGunItem.ItemDictionary.Clear();
+		ToolGunHandler.PlayerSelectedObjectDict.Clear();
 	}
 }

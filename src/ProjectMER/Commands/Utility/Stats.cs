@@ -73,6 +73,8 @@ public class Stats : ICommand
 		foreach (SchematicObject schematic in UnityEngine.Object.FindObjectsByType<SchematicObject>(UnityEngine.FindObjectsSortMode.None))
 			sb.Append($"\n- schematic {schematic.Name}: {schematic.NetworkedCount} networked, {(schematic.IsStatic ? "static" : "dynamic")}, {(schematic.IsBuilt ? "built" : $"{schematic.SpawnGroup.Pending} queued")}");
 
+		MerVisibility.AppendStats(sb);
+
 		sb.Append($"\nPlayers (observed MER objects / all observed):");
 		foreach (Player player in Player.List)
 		{

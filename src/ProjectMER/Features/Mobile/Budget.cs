@@ -6,7 +6,8 @@ namespace ProjectMER.Features.Mobile;
 
 /// <summary>
 /// Counts networked MER objects and applies the budgets of docs/projectmer-port-plan.md §3.6 and §3.7: the global warning
-/// and hard cap, the per-schematic warning and the light cap.
+/// and hard cap, the per-schematic warning and the light cap. The per-schematic light cap is part of the schematic plan
+/// (<see cref="SchematicOptimizer"/>).
 /// </summary>
 /// <remarks>
 /// Objects are counted from creation (while still queued) until they are destroyed, through <see cref="MerBlockLink"/>.
@@ -44,9 +45,19 @@ public static class Budget
 	public static int Refused { get; private set; }
 
 	/// <summary>
-	/// Gets the number of MER lights (spawned or queued).
+	/// Gets the number of MER lights (spawned, queued, or admitted by a schematic that is still being built).
 	/// </summary>
-	public static int Lights => CountByKind[(int)MerObjectKind.Light];
+	public static int Lights => CountByKind[(int)MerObjectKind.Light] + ReservedLights;
+
+	/// <summary>
+	/// Gets the number of lights admitted by schematics that are still being built.
+	/// </summary>
+	public static int ReservedLights { get; private set; }
+
+	/// <summary>
+	/// Gets the counter generation; it changes on every <see cref="Reset"/>.
+	/// </summary>
+	internal static int Generation => _generation;
 
 	/// <summary>
 	/// Gets the number of networked objects of a kind.
@@ -54,14 +65,40 @@ public static class Budget
 	public static int Count(MerObjectKind kind) => CountByKind[(int)kind];
 
 	/// <summary>
+	/// Approximate spawn message bytes of a primitive toy (docs/projectmer-port-plan.md §3.1).
+	/// </summary>
+	public const int PrimitiveSpawnBytes = 103;
+
+	/// <summary>
+	/// Approximate spawn message bytes of a light toy.
+	/// </summary>
+	public const int LightSpawnBytes = 111;
+
+	/// <summary>
+	/// Approximate spawn message bytes of a shooting target.
+	/// </summary>
+	public const int ShootingTargetSpawnBytes = 90;
+
+	/// <summary>
+	/// Approximate spawn message bytes of a pickup, door or structure.
+	/// </summary>
+	public const int OtherSpawnBytes = 120;
+
+	/// <summary>
 	/// Gets an estimate of the bytes a joining player receives for all MER objects (spawn messages, §3.1).
 	/// </summary>
 	public static long EstimatedSpawnBytes =>
-		(103L * CountByKind[(int)MerObjectKind.Primitive]) +
-		(111L * CountByKind[(int)MerObjectKind.Light]) +
-		(103L * CountByKind[(int)MerObjectKind.Indicator]) +
-		(90L * CountByKind[(int)MerObjectKind.ShootingTarget]) +
-		(120L * (CountByKind[(int)MerObjectKind.Pickup] + CountByKind[(int)MerObjectKind.Structure] + CountByKind[(int)MerObjectKind.Door]));
+		EstimateSpawnBytes(CountByKind[(int)MerObjectKind.Primitive] + CountByKind[(int)MerObjectKind.Indicator], CountByKind[(int)MerObjectKind.Light], CountByKind[(int)MerObjectKind.Pickup] + CountByKind[(int)MerObjectKind.Structure] + CountByKind[(int)MerObjectKind.Door]) +
+		((long)ShootingTargetSpawnBytes * CountByKind[(int)MerObjectKind.ShootingTarget]);
+
+	/// <summary>
+	/// Estimates the spawn message bytes one player receives for a set of objects.
+	/// </summary>
+	/// <param name="primitives">Primitive toys.</param>
+	/// <param name="lights">Light toys.</param>
+	/// <param name="others">Pickups, doors and structures.</param>
+	public static long EstimateSpawnBytes(int primitives, int lights, int others) =>
+		((long)PrimitiveSpawnBytes * primitives) + ((long)LightSpawnBytes * lights) + ((long)OtherSpawnBytes * others);
 
 	private static Config Config => ProjectMER.Singleton.Config!;
 
@@ -90,8 +127,20 @@ public static class Budget
 	/// </summary>
 	/// <param name="strengths">The intensity × range of each candidate.</param>
 	/// <returns>A flag per candidate: <see langword="true"/> to spawn it.</returns>
-	public static bool[] AdmitLights(IReadOnlyList<float> strengths)
+	public static bool[] AdmitLights(IReadOnlyList<float> strengths) => AdmitLights(strengths, false, out _);
+
+	/// <summary>
+	/// Decides which candidate lights fit under <c>max_lights</c>; with <paramref name="reserve"/>, the admitted lights
+	/// count against the cap until they are created (<see cref="ReleaseLights"/>), so loads built across frames do not
+	/// over-admit.
+	/// </summary>
+	/// <param name="strengths">The intensity × range of each candidate.</param>
+	/// <param name="reserve">Whether to reserve the admitted lights.</param>
+	/// <param name="admittedCount">The number of admitted lights.</param>
+	/// <returns>A flag per candidate: <see langword="true"/> to spawn it.</returns>
+	internal static bool[] AdmitLights(IReadOnlyList<float> strengths, bool reserve, out int admittedCount)
 	{
+		admittedCount = 0;
 		bool[] admitted = new bool[strengths.Count];
 		if (strengths.Count == 0)
 			return admitted;
@@ -103,19 +152,37 @@ public static class Budget
 
 		Array.Sort(order, (a, b) => strengths[b].CompareTo(strengths[a]));
 		for (int i = 0; i < order.Length && i < free; i++)
+		{
 			admitted[order[i]] = true;
+			admittedCount++;
+		}
 
 		int skipped = order.Length - Math.Min(free, order.Length);
 		for (int i = 0; i < skipped; i++)
 			UnsupportedContent.Skip("lights", $"max_lights {Config.MaxLights} reached; the weakest lights by intensity x range are skipped");
 
-		if (!_warnedLights && Lights + Math.Min(free, order.Length) > 8)
+		if (!_warnedLights && Lights + admittedCount > 8)
 		{
 			_warnedLights = true;
 			Logger.Warn($"More than 8 MER lights are loaded. Every pixel light adds a draw call per lit primitive on phones.");
 		}
 
+		if (reserve)
+			ReservedLights += admittedCount;
+
 		return admitted;
+	}
+
+	/// <summary>
+	/// Releases light reservations made by <see cref="AdmitLights(IReadOnlyList{float}, bool, out int)"/> (the light is
+	/// about to be created, or will not be).
+	/// </summary>
+	/// <param name="count">The number of reservations.</param>
+	/// <param name="generation">The <see cref="Generation"/> they were made in; older reservations were already cleared.</param>
+	internal static void ReleaseLights(int count, int generation)
+	{
+		if (generation == _generation)
+			ReservedLights = Math.Max(0, ReservedLights - count);
 	}
 
 	/// <summary>
@@ -201,6 +268,7 @@ public static class Budget
 		Static = 0;
 		Transparent = 0;
 		Refused = 0;
+		ReservedLights = 0;
 		_warnedTotal = false;
 		_reportedHardCap = false;
 		_warnedLights = false;

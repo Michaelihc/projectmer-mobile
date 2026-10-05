@@ -50,6 +50,9 @@ public class TeleportObject : MonoBehaviour
 		NextTimeUse = dateTime;
 		target.NextTimeUse = dateTime;
 
+		// Zone culling: show the destination zone (its nearest objects at once) before the player arrives.
+		Mobile.MerVisibility.Prefetch(player, target.gameObject.transform.position);
+
 		player.Position = target.gameObject.transform.position;
 		player.LookRotation = target.gameObject.transform.eulerAngles;
 	}

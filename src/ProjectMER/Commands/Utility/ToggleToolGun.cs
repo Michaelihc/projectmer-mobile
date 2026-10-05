@@ -1,9 +1,7 @@
 using CommandSystem;
 using LabApi.Features.Permissions;
 using LabApi.Features.Wrappers;
-using ProjectMER.Features;
 using ProjectMER.Features.Enums;
-using ProjectMER.Features.Extensions;
 using ProjectMER.Features.ToolGun;
 
 namespace ProjectMER.Commands;
@@ -13,7 +11,8 @@ namespace ProjectMER.Commands;
 /// </summary>
 /// <remarks>
 /// Carl Mod has no server-specific settings, so <c>mp tg schematic &lt;name|index&gt;</c> replaces ProjectMER's schematic
-/// dropdown (indices follow <c>mp list</c>), and <c>mp tg type &lt;type&gt;</c> picks the object type.
+/// dropdown (indices follow <c>mp list</c>), <c>mp tg type &lt;type&gt;</c> picks the object type and
+/// <c>mp tg mode &lt;create|delete&gt;</c> sets the mode. All three are per player and work without holding the tool gun.
 /// </remarks>
 public class ToggleToolGun : ICommand
 {
@@ -21,7 +20,7 @@ public class ToggleToolGun : ICommand
 
 	public string[] Aliases => ["tg"];
 
-	public string Description => "Tool gun for spawning and editing objects. Subcommands: schematic <name|index>, type <type>.";
+	public string Description => "Gives or removes the tool gun. Subcommands: schematic <name|index>, type <type>, mode <create|delete>.";
 
 	public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
 	{
@@ -38,17 +37,22 @@ public class ToggleToolGun : ICommand
 			return false;
 		}
 
-		if (arguments.Count >= 2)
+		if (arguments.Count >= 1)
 		{
+			string value = arguments.Count >= 2 ? arguments.At(1) : string.Empty;
 			switch (arguments.At(0).ToLowerInvariant())
 			{
 				case "schematic":
 				case "s":
-					return SetSchematic(player, arguments.At(1), out response);
+					return SetSchematic(player, value, out response);
 
 				case "type":
 				case "t":
-					return SetType(player, arguments.At(1), out response);
+					return SetType(player, value, out response);
+
+				case "mode":
+				case "m":
+					return SetMode(player, value, out response);
 			}
 		}
 
@@ -60,7 +64,7 @@ public class ToggleToolGun : ICommand
 
 		if (ToolGunItem.TryAdd(player))
 		{
-			response = "You now have the Tool Gun!";
+			response = $"You now have the Tool Gun! Fire: create/delete, aim + fire: select, inspect or light: switch create/delete, reload/drop: previous/next type.";
 			return true;
 		}
 
@@ -70,12 +74,24 @@ public class ToggleToolGun : ICommand
 
 	private static bool SetSchematic(Player player, string value, out string response)
 	{
-		string[] names = MapUtils.GetAvailableSchematicNames();
+		ToolGunItem.RefreshSchematicNames(force: true);
+		string[] names = ToolGunItem.SchematicNames;
 		string? name = null;
 		if (int.TryParse(value, out int index) && index >= 1 && index <= names.Length)
+		{
 			name = names[index - 1];
+		}
 		else
-			name = names.FirstOrDefault(x => string.Equals(x, value, StringComparison.OrdinalIgnoreCase));
+		{
+			foreach (string candidate in names)
+			{
+				if (string.Equals(candidate, value, StringComparison.OrdinalIgnoreCase))
+				{
+					name = candidate;
+					break;
+				}
+			}
+		}
 
 		if (name == null)
 		{
@@ -83,10 +99,11 @@ public class ToggleToolGun : ICommand
 			return false;
 		}
 
-		ToolGunItem.SelectedSchematics[player] = name;
-		if (player.CurrentItem.IsToolGun(out ToolGunItem toolGun))
-			toolGun.SelectedObjectToSpawn = ToolGunObjectType.Schematic;
-
+		ToolGunState state = ToolGunState.Get(player);
+		state.SchematicName = name;
+		state.ObjectType = ToolGunObjectType.Schematic;
+		state.Mode = ToolGunMode.Create;
+		SyncToolGun(player, state);
 		response = $"Tool gun creates schematic {name}.";
 		return true;
 	}
@@ -106,14 +123,49 @@ public class ToggleToolGun : ICommand
 			return false;
 		}
 
-		if (!player.CurrentItem.IsToolGun(out ToolGunItem toolGun))
+		ToolGunState state = ToolGunState.Get(player);
+		state.ObjectType = objectType;
+		state.Mode = ToolGunMode.Create;
+		SyncToolGun(player, state);
+		response = objectType == ToolGunObjectType.Schematic && string.IsNullOrEmpty(state.SchematicName)
+			? "Tool gun creates schematics; pick one with mp tg schematic <name|index>."
+			: $"Tool gun creates {objectType}.";
+		return true;
+	}
+
+	private static bool SetMode(Player player, string value, out string response)
+	{
+		ToolGunState state = ToolGunState.Get(player);
+		switch (value.ToLowerInvariant())
 		{
-			response = "Hold the tool gun first.";
-			return false;
+			case "create":
+			case "c":
+				state.Mode = ToolGunMode.Create;
+				break;
+
+			case "delete":
+			case "d":
+				state.Mode = ToolGunMode.Delete;
+				break;
+
+			default:
+				response = "Usage: mp tg mode <create|delete>. Aim + fire selects in either mode.";
+				return false;
 		}
 
-		toolGun.SelectedObjectToSpawn = objectType;
-		response = $"Tool gun creates {objectType}.";
+		SyncToolGun(player, state);
+		response = $"Tool gun mode: {state.Mode}.";
 		return true;
+	}
+
+	private static void SyncToolGun(Player player, ToolGunState state)
+	{
+		foreach (KeyValuePair<ushort, ToolGunItem> pair in ToolGunItem.ItemDictionary)
+		{
+			if (pair.Value.Firearm != null && pair.Value.Firearm.Owner == player.ReferenceHub)
+				pair.Value.ApplyStatus(state.Mode == ToolGunMode.Create);
+		}
+
+		ToolGunHud.Refresh(state);
 	}
 }

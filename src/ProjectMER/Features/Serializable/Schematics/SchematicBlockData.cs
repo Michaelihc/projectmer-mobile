@@ -70,6 +70,36 @@ public class SchematicBlockData
 	}
 
 	/// <summary>
+	/// Reads a primitive block like <see cref="GetPrimitive"/> but leaves the colour as text, so it can run on a worker
+	/// thread (<see cref="Serialization.SchematicColor"/> parses it there).
+	/// </summary>
+	internal void ReadPrimitive(out PrimitiveType primitiveType, out string colorText, out PrimitiveFlags primitiveFlags)
+	{
+		primitiveType = (PrimitiveType)Convert.ToInt32(GetProperty("PrimitiveType", (long)PrimitiveType.Cube), CultureInfo.InvariantCulture);
+		colorText = GetProperty("Color", "#FFFFFF").ToString();
+
+		if (Properties != null && Properties.TryGetValue("PrimitiveFlags", out object flags) && flags != null)
+		{
+			primitiveFlags = (PrimitiveFlags)Convert.ToByte(flags, CultureInfo.InvariantCulture);
+		}
+		else
+		{
+			primitiveFlags = PrimitiveFlags.Visible;
+			if (Scale.x >= 0f)
+				primitiveFlags |= PrimitiveFlags.Collidable;
+		}
+	}
+
+	/// <summary>
+	/// Reads a light block's intensity and range (worker-thread safe).
+	/// </summary>
+	internal void ReadLightStrength(out float intensity, out float range)
+	{
+		intensity = Convert.ToSingle(GetProperty("Intensity", 1d), CultureInfo.InvariantCulture);
+		range = Convert.ToSingle(GetProperty("Range", 1d), CultureInfo.InvariantCulture);
+	}
+
+	/// <summary>
 	/// Reads a light block. Spot lights, shapes, angles and shadow strength do not exist in Carl Mod's light toy.
 	/// </summary>
 	public void GetLight(out Color color, out float intensity, out float range, out bool shadows, out LightType lightType)

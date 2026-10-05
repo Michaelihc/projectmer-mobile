@@ -5,6 +5,7 @@ using Mirror;
 using ProjectMER.Configs;
 using ProjectMER.Features.Enums;
 using ProjectMER.Features.Objects;
+using ProjectMER.Features.Serialization;
 using UnityEngine;
 
 namespace ProjectMER.Features.Mobile;
@@ -18,6 +19,12 @@ namespace ProjectMER.Features.Mobile;
 /// <see cref="MerVisibility.Spawn"/>. Each frame the queue spawns up to <c>spawn_max_per_frame</c> objects or until
 /// <c>spawn_time_budget_ms</c> is used, in <see cref="SpawnPriority"/> order and nearest to a player first, so a phone
 /// instantiates a few dozen primitives per frame instead of a whole schematic at once.
+/// </para>
+/// <para>
+/// Schematics are built here too: after the spawns, each frame's remaining time budget goes to
+/// <see cref="SchematicObject"/> builders, which create anchors and toys block by block (their files are parsed and
+/// planned on worker threads by <see cref="SchematicLoader"/>). A load therefore never builds a whole schematic in one
+/// frame.
 /// </para>
 /// <para>
 /// Destroys of spawned objects go through the same coroutine (four times the spawn limit per frame). After a toy has
@@ -36,6 +43,8 @@ public static class SpawnQueue
 	private static readonly List<AdminToyBase> PendingDisable = [];
 
 	private static readonly List<SchematicObject> PendingResync = [];
+
+	private static readonly List<SchematicObject> Builders = [];
 
 	private static readonly List<Vector3> PlayerPositions = [];
 
@@ -72,6 +81,12 @@ public static class SpawnQueue
 
 	private static float _sessionWorstFrameMs;
 
+	private static double _sessionBuildMs;
+
+	private static double _sessionWorstBuildMs;
+
+	private static int _sessionBuildFrames;
+
 	/// <summary>
 	/// Gets the number of objects waiting to be spawned.
 	/// </summary>
@@ -91,6 +106,11 @@ public static class SpawnQueue
 	/// Gets the number of destroys waiting to be sent.
 	/// </summary>
 	public static int PendingDestroys => Destroys.Count;
+
+	/// <summary>
+	/// Gets the number of schematics still loading or building.
+	/// </summary>
+	public static int PendingBuilds => Builders.Count;
 
 	/// <summary>
 	/// Gets a summary of the last finished drain session.
@@ -183,6 +203,22 @@ public static class SpawnQueue
 	}
 
 	/// <summary>
+	/// Adds a schematic whose server objects are built across frames (<see cref="SchematicObject.StepBuild"/>).
+	/// </summary>
+	/// <param name="schematic">The schematic.</param>
+	internal static void AddBuilder(SchematicObject schematic)
+	{
+		if (Builders.Contains(schematic))
+			return;
+
+		Builders.Add(schematic);
+		if (!_sessionActive && _enabled)
+			BeginSession();
+
+		EnsureRunning();
+	}
+
+	/// <summary>
 	/// Schedules an in-place resend of a static schematic's blocks after its root moved.
 	/// </summary>
 	/// <param name="schematic">The schematic.</param>
@@ -205,6 +241,8 @@ public static class SpawnQueue
 		Destroys.Clear();
 		PendingDisable.Clear();
 		PendingResync.Clear();
+		Builders.Clear();
+		SchematicLoader.Clear();
 		_sessionActive = false;
 	}
 
@@ -219,7 +257,7 @@ public static class SpawnQueue
 
 	private static bool HasWork()
 	{
-		if (Destroys.Count > 0 || PendingDisable.Count > 0 || PendingResync.Count > 0)
+		if (Destroys.Count > 0 || PendingDisable.Count > 0 || PendingResync.Count > 0 || Builders.Count > 0)
 			return true;
 
 		for (int i = 0; i < Buckets.Length; i++)
@@ -261,9 +299,18 @@ public static class SpawnQueue
 		ProcessResyncs();
 
 		int spawned = ProcessSpawns(start);
+		double buildMs = ProcessBuilds(start);
 
 		if (_sessionActive)
 		{
+			if (buildMs > 0)
+			{
+				_sessionBuildFrames++;
+				_sessionBuildMs += buildMs;
+				if (buildMs > _sessionWorstBuildMs)
+					_sessionWorstBuildMs = buildMs;
+			}
+
 			_sessionFrames++;
 			_sessionSpawned += spawned;
 			if (spawned > _sessionMaxPerFrame)
@@ -281,7 +328,7 @@ public static class SpawnQueue
 			if (frameMs > _sessionWorstFrameMs)
 				_sessionWorstFrameMs = frameMs;
 
-			if (PendingSpawns == 0)
+			if (PendingSpawns == 0 && Builders.Count == 0)
 				EndSession();
 		}
 	}
@@ -336,10 +383,51 @@ public static class SpawnQueue
 		}
 	}
 
+	/// <summary>
+	/// Gives the rest of the frame's time budget to schematic builders, oldest first. Each builder that runs makes at
+	/// least one step, so builds progress even when spawning used the whole budget.
+	/// </summary>
+	/// <returns>The time spent building, in milliseconds.</returns>
+	private static double ProcessBuilds(long start)
+	{
+		if (Builders.Count == 0)
+			return 0;
+
+		long sliceStart = Stopwatch.GetTimestamp();
+		long deadline = start + BudgetTicks;
+		for (int i = 0; i < Builders.Count; i++)
+		{
+			SchematicObject builder = Builders[i];
+			bool done;
+			try
+			{
+				done = builder == null || builder.StepBuild(deadline);
+			}
+			catch (Exception e)
+			{
+				Logger.Error($"Schematic build failed: {e}");
+				done = true;
+			}
+
+			if (done)
+			{
+				Builders.RemoveAt(i);
+				i--;
+			}
+
+			if (Stopwatch.GetTimestamp() >= deadline)
+				break;
+		}
+
+		return (Stopwatch.GetTimestamp() - sliceStart) * 1000.0 / Stopwatch.Frequency;
+	}
+
+	private static long BudgetTicks => (long)(Math.Max(0.1f, Config.SpawnTimeBudgetMs) * Stopwatch.Frequency / 1000.0);
+
 	private static int ProcessSpawns(long start)
 	{
 		int maxPerFrame = Math.Max(1, Config.SpawnMaxPerFrame);
-		long budgetTicks = (long)(Math.Max(0.1f, Config.SpawnTimeBudgetMs) * Stopwatch.Frequency / 1000.0);
+		long budgetTicks = BudgetTicks;
 		int spawned = 0;
 
 		for (int priority = 0; priority < Buckets.Length && spawned < maxPerFrame; priority++)
@@ -412,6 +500,9 @@ public static class SpawnQueue
 		_sessionTotalSliceMs = 0;
 		_sessionSlicesOverBudget = 0;
 		_sessionWorstFrameMs = 0;
+		_sessionBuildMs = 0;
+		_sessionWorstBuildMs = 0;
+		_sessionBuildFrames = 0;
 		_sessionGcStart = GC.CollectionCount(0);
 	}
 
@@ -423,6 +514,7 @@ public static class SpawnQueue
 		double averageSlice = _sessionFrames > 0 ? _sessionTotalSliceMs / _sessionFrames : 0;
 		LastSessionSummary = $"{_sessionSpawned} spawned in {seconds:F2} s ({rate:F0}/s) over {_sessionFrames} frames, max {_sessionMaxPerFrame}/frame; " +
 			$"queue slice average {averageSlice:F2} ms, slowest {_sessionWorstSliceMs:F2} ms, {_sessionSlicesOverBudget} slices over twice the budget; " +
+			$"schematic building {_sessionBuildMs:F1} ms over {_sessionBuildFrames} frames, slowest {_sessionWorstBuildMs:F2} ms; " +
 			$"slowest server frame {_sessionWorstFrameMs:F1} ms; {GC.CollectionCount(0) - _sessionGcStart} GCs; {_sessionDropped} dropped (cancelled)";
 
 		if (Config.LogSpawnStats)

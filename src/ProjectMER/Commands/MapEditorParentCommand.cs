@@ -48,6 +48,7 @@ public class MapEditorParentCommand : ParentCommand
 		// Carl Mod port: diagnostics for the mobile budgets.
 		RegisterCommand(new Stats());
 		RegisterCommand(new Prefabs());
+		RegisterCommand(new Optimize());
 	}
 
 	protected override bool ExecuteParent(ArraySegment<string> arguments, ICommandSender sender, out string response)

@@ -64,7 +64,7 @@ public class Select : ICommand
 		{
 			ToolGunHandler.SelectObject(player, null!);
 			response = "You've successfully unselected the object!";
-			return false;
+			return true;
 		}
 
 		response = "You aren't looking at any object!";

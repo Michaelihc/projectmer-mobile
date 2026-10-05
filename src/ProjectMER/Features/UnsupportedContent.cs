@@ -30,6 +30,31 @@ public static class UnsupportedContent
 	}
 
 	/// <summary>
+	/// Takes an open scope off the reporting stack without logging it, so work that continues in later frames (schematics
+	/// built across frames) keeps collecting into one scope. <see cref="Resume"/> puts it back; dispose it as usual to log.
+	/// </summary>
+	/// <param name="scope">A scope from <see cref="Begin"/>.</param>
+	internal static void Suspend(IDisposable scope)
+	{
+		if (scope is not Scope target || !Scopes.Contains(target))
+			return;
+
+		while (Scopes.Count > 0 && !ReferenceEquals(Scopes.Pop(), target))
+		{
+		}
+	}
+
+	/// <summary>
+	/// Puts a suspended scope back on top of the reporting stack.
+	/// </summary>
+	/// <param name="scope">A scope from <see cref="Begin"/>.</param>
+	internal static void Resume(IDisposable scope)
+	{
+		if (scope is Scope target && !Scopes.Contains(target))
+			Scopes.Push(target);
+	}
+
+	/// <summary>
 	/// Counts content that is not spawned.
 	/// </summary>
 	/// <param name="what">What was skipped, plural, such as <c>Text blocks</c>.</param>
@@ -72,7 +97,7 @@ public static class UnsupportedContent
 				return;
 
 			_disposed = true;
-			while (Scopes.Count > 0)
+			while (Scopes.Contains(this))
 			{
 				// Close inner scopes that were not disposed (exceptions) together with this one.
 				if (ReferenceEquals(Scopes.Pop(), this))

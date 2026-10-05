@@ -187,12 +187,17 @@ public static class ToyFactory
 	}
 
 	/// <summary>
-	/// Applies the light SyncVars Carl Mod has and the shadow policy (§3.6).
+	/// Applies the light SyncVars Carl Mod has, the intensity scale and the shadow policy (§3.6).
 	/// </summary>
+	/// <remarks>
+	/// ProjectMER content is authored for official SL, whose HDRP lights take physical intensities (an exported light of
+	/// intensity 60 is an ordinary lamp). Carl Mod renders with Unity's built-in pipeline, where 1 to 2 is a normal light
+	/// and 60 turns every lit surface white, so the intensity is multiplied by <c>light_intensity_scale</c>.
+	/// </remarks>
 	public static void ApplyLight(LightSourceToy light, Color color, float intensity, float range, bool shadows)
 	{
 		light.Color = color;
-		light.Intensity = intensity;
+		light.Intensity = intensity * Config.LightIntensityScale;
 		light.Range = range;
 
 		if (shadows && !Config.AllowLightShadows)
