@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>ProjectMER</AssemblyName>
+    <RootNamespace>ProjectMER</RootNamespace>
+    <Version>2025.11.2.1</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- ProjectMER's code style: unannotated nullable fields and missing XML docs. -->
+    <NoWarn>$(NoWarn);CS1591;CS0618;CS8618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8625;CS8629;CS8714</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="System" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LabApi\LabApi.csproj" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.3" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Lib.Harmony" Version="2.3.6" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp" HintPath="$(CarlManaged)\Assembly-CSharp.dll" Publicize="true" Private="false" />
+    <Reference Include="Assembly-CSharp-firstpass" HintPath="$(CarlManaged)\Assembly-CSharp-firstpass.dll" Publicize="true" Private="false" />
+    <Reference Include="Mirror" HintPath="$(CarlManaged)\Mirror.dll" Publicize="true" Private="false" />
+    <Reference Include="DigitalDust" HintPath="$(CarlManaged)\DigitalDust.dll" Publicize="true" Private="false" />
+    <Reference Include="CommandSystem.Core" HintPath="$(CarlManaged)\CommandSystem.Core.dll" Private="false" />
+    <Reference Include="NorthwoodLib" HintPath="$(CarlManaged)\NorthwoodLib.dll" Private="false" />
+    <Reference Include="YamlDotNet" HintPath="$(CarlManaged)\YamlDotNet.dll" Private="false" />
+    <Reference Include="Newtonsoft.Json" HintPath="$(CarlManaged)\Newtonsoft.Json.dll" Private="false" />
+    <Reference Include="UnityEngine" HintPath="$(CarlManaged)\UnityEngine.dll" Private="false" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(CarlManaged)\UnityEngine.CoreModule.dll" Private="false" />
+    <Reference Include="UnityEngine.PhysicsModule" HintPath="$(CarlManaged)\UnityEngine.PhysicsModule.dll" Private="false" />
+    <Reference Include="UnityEngine.AnimationModule" HintPath="$(CarlManaged)\UnityEngine.AnimationModule.dll" Private="false" />
+    <Reference Include="UnityEngine.AssetBundleModule" HintPath="$(CarlManaged)\UnityEngine.AssetBundleModule.dll" Private="false" />
+    <Reference Include="mscorlib" HintPath="$(CarlManaged)\mscorlib.dll" Private="false" />
+    <Reference Include="System" HintPath="$(CarlManaged)\System.dll" Private="false" />
+    <Reference Include="System.Core" HintPath="$(CarlManaged)\System.Core.dll" Private="false" />
+    <Reference Include="netstandard" HintPath="$(CarlManaged)\netstandard.dll" Private="false" />
+  </ItemGroup>
+</Project>

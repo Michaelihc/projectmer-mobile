@@ -206,7 +206,7 @@ How the port finds them:
 | `EnableFileSystemWatcher` | adapted. `FileSystemWatcher.Changed` runs on a thread-pool thread, but ProjectMER calls `Timing.CallDelayed` from it (`PMER/ProjectMER.cs: OnMapFileChanged`). The port enqueues the map name to a main-thread queue that an MEC coroutine drains. |
 | `AutoSelect` | as-is |
 | `OnWaitingForPlayers`, `OnRoundStarted`, `OnLczDecontaminationStarted`, `OnWarheadStarted/Stopped/Detonated` | as-is |
-| New mobile options | `static_by_default: true`, `spawn_max_per_frame: 20`, `spawn_time_budget_ms: 3`, `dynamic_toy_sync_interval: 0.1`, `allow_light_shadows: false`, `max_lights: 16`, `primitive_warn_per_schematic: 300`, `networked_warn_total: 1500`, `networked_hard_cap: 4000`, `invisible_collider_mode: Transparent` (`Transparent`/`Skip`), `optimize_schematics: true`, `managed_visibility: true`, `zone_culling: SurfaceFacility` (`None`/`SurfaceFacility`/`PerZone`), `zone_culling_min_objects: 150`, `hud_interval: 0.5`. These are starting values to tune with §5.3 measurements. |
+| New mobile options | `static_by_default: true`, `honor_static_property: false` (§3.2), `spawn_max_per_frame: 20`, `spawn_time_budget_ms: 3`, `dynamic_toy_sync_interval: 0.1`, `allow_light_shadows: false`, `max_lights: 16`, `primitive_warn_per_schematic: 300`, `networked_warn_total: 1500`, `networked_hard_cap: 4000`, `invisible_collider_mode: Transparent` (`Transparent`/`Skip`), `optimize_schematics: true`, `managed_visibility: true`, `zone_culling: SurfaceFacility` (`None`/`SurfaceFacility`/`PerZone`), `zone_culling_min_objects: 150`, `hud_interval: 0.5`, `warhead_spares_outside_rooms: true` (§1.8), `log_spawn_stats: true` (one throughput line per spawn-queue drain). These are starting values to tune with §5.3 measurements. |
 
 ### 1.8 Other API and patches
 
@@ -336,21 +336,31 @@ Rule: **no networked object has a server-side parent at spawn time.** This cover
 and structures.
 
 - `SchematicObject.Init` builds the hierarchy from server-only anchors: plain GameObjects carrying the
-  block's local transform, created only where needed. It computes each networked block's world
-  transform from `anchor.localToWorldMatrix`: position, rotation, and `lossyScale` for scale. It then
-  instantiates the toy at root level with that world transform and sets `NetworkPosition`,
-  `NetworkRotation` and `NetworkScale` to the encoded values (§3.3) before `NetworkServer.Spawn`.
+  block's local transform, created only where needed (blocks with children, blocks that produce
+  nothing on the client, and every block of an animated or physics subtree). It takes each networked
+  block's world transform from Unity: `position`, `rotation` and `lossyScale` of the block's anchor, or
+  of one reusable scratch transform placed under the parent anchor for leaves without an anchor. The
+  plain products (`parent.rotation * localRotation` and the diagonal of `inverse(R) * M`) are not what
+  Unity reports once a parent has negative scale components: a server test with 200 random hierarchies
+  found up to 180° and 73 units of difference. It then instantiates the toy at root level with that world
+  transform and sets `NetworkPosition`, `NetworkRotation` and `NetworkScale` to the encoded values
+  (§3.3) before `NetworkServer.Spawn`.
 - `ObjectFromId` keeps pointing at the anchors, so the animator, rigidbody and `AnimationController`
   APIs see the same structure as in ProjectMER.
 - Each toy gets a small `MerBlockLink` component pointing to its `SchematicObject`/`MapEditorObject`.
   Tool-gun raycasts and `TryGetComponentInParent` resolve through it.
 - **Static (default).** Blocks are `IsStatic = true` unless one of these holds:
-  - the schematic has an animator or a rigidbody entry
-  - the block has an explicit `"Static": false`
-  - the API switched the schematic to dynamic
+  - the block is in the subtree of a block with an animator or a rigidbody entry (only those
+    subtrees move; the rest of an animated schematic stays static)
+  - the API switched the schematic to dynamic (`SchematicObject.IsStatic = false`)
+  - `honor_static_property` is on and the block has an explicit `"Static": false`
 
   ProjectMER treats a missing `Static` property as dynamic (`SchematicBlockData.Create`). The port
-  inverts that through `static_by_default`, because exported schematics rarely move. Standalone map
+  inverts that through `static_by_default`, because exported schematics rarely move. Exporters also
+  write `"Static": false` for blocks that never move: across the 57 AutoEvent ProjectMER schematics,
+  9054 primitive and light blocks say `false`, 4513 `true` and 12936 have no property. Honoring
+  `false` would make all 2558 networked blocks of Skeld dynamic, while only 286 of them sit under its
+  33 animated roots. So the property only counts with `honor_static_property`. Standalone map
   objects (`primitives`, `lights`, `shooting_targets`) are static as well. ProjectMER never makes them
   static.
 - **Editing a static toy** (modify, position, rotation, scale, or a `SchematicObject` setter). Update
@@ -359,25 +369,38 @@ and structures.
   overwrites the transform and state at full precision. That is one message of about 103 B per toy,
   with no destroy, no re-instantiation and no material leak. A change to collidability needs a real
   respawn (`UnSpawn` + `Spawn`), because the collider is decided only in `SetPrimitive`.
-- **Dynamic schematics** (animated or physics). The toy components are disabled on the server (§3.4).
+- **Dynamic subtrees** (animated or physics). The toy components are disabled on the server (§3.4).
   One `SchematicSync` component per schematic copies anchor world transforms into the toys' SyncVars
   in its `LateUpdate`, only for anchors whose `transform.hasChanged` is set. It uses `lossyScale`,
   which avoids MER 13.2's root-scale approximation (`MER132/Patches/UpdatePositionServerPatch.cs`) and
   any Harmony patch on `AdminToyBase`. Set `syncInterval = dynamic_toy_sync_interval` on those toys.
   Add a kinematic `Rigidbody` server-side to moving collidable toys so PhysX does not rebuild static
-  colliders.
+  colliders. A rigidbody entry goes on the toy itself (it has the collider), whose own `LateUpdate`
+  syncs it; `SchematicSync` then moves the block's anchor from the toy so the children follow. Rigidbody
+  entries of pickups go on the pickup's own body, and entries of empties on their anchor.
 
 ### 3.3 Collider and visibility encoding
 
 | ProjectMER `PrimitiveFlags` | Static toy | Dynamic toy |
 |---|---|---|
-| `Visible\|Collidable` (3) | transform scale `s`, `NetworkScale = s`. If every component of `s` is negative: scale `\|s\|` and rotation `R·Rx(180°)` | same |
-| `Visible` (2) | transform scale `\|s\|` (rotation `R·Rx(180°)` if `s` was all-negative), `NetworkScale = −\|s\|` | transform and `NetworkScale = −\|s\|`, rotation `R·Rx(180°)` |
+| `Visible\|Collidable` (3) | transform scale `\|s\|`, rotation `R·Q`; `NetworkScale = \|s\|` | same |
+| `Visible` (2) | transform scale `\|s\|`, rotation `R·Q`; `NetworkScale = −\|s\|` | transform and `NetworkScale = −\|s\|`, rotation `R·Q′` |
 | `Collidable` (1) | `invisible_collider_mode: Transparent`: as (3) with `MaterialColor.a = 0`. `Skip`: not spawned | same |
 | `None` (0) | not networked (server anchor only) | same |
 
+`Q` turns the sign pattern of `s` into a rotation: take `D = diag(sign(s))`, flip the x sign if an
+odd number of components is negative, and the result is the identity or a 180° turn about X, Y or Z.
+`Q′` does the same for `−sign(s)`. For a positive `s`, `Q` is the identity and `Q′ = Rx(180°)`. The
+LabAPI `PrimitiveObjectToy` wrapper implements this (`Flags`, `Scale`, `Rotation` and `IsStatic` all
+re-encode), and `ToyFactory` builds on it. A server self-test checked 864 combinations (3 flag sets ×
+static/dynamic × 6 primitive types × 8 sign patterns, plus flag/static toggles and setter changes): the
+rendered matrix always equals the requested one up to a local X mirror, and the `Scale` SyncVar always
+gives the intended collider.
+
 Why this works:
 
+- **Mixed signs are exact too.** Plain `|s|` would drop a mirror on Y or Z, which flips which side
+  of a one-sided Plane or Quad is visible. The rotation `Q` keeps it.
 - **The client gets no collider when every `Scale` component is ≤ 0.** For a static toy, the client
   never applies the `Scale` SyncVar to the transform; only the spawn message's `localScale` is used. So
   the visual scale (positive) and the collision decision (negative SyncVar) are independent. That makes
@@ -428,6 +451,12 @@ Why this works:
 - **Throughput.** At 20 per frame and 60 Hz, a 1000-block schematic streams in under 1 s, about
   1200 objects/s or 124 KB/s per player. The client then instantiates about 40 primitives per frame at
   30 fps instead of 1000 at once.
+- **Measured on the server** (phase A, no client connected): the 2000-cube grid streams in 1.65 s over
+  100 frames (1215 objects/s, 20 per frame), with an average queue slice of 0.11 ms and the slowest
+  at 0.24 ms; Skeld's 2558 blocks take 2.11 s. Spawning is not the server cost: the synchronous build
+  (instantiating, positioning and encoding every block) makes the load frame itself take 170-270 ms
+  for 2000-2600 blocks. Unloading during streaming drops the rest of the group (1560-1580 of 2000 dropped
+  after 0.5 s in the test).
 - **ProjectMER's synchronous behaviour is replaced.** It spawns every block immediately inside
   `CreateObject` (`PMER/Features/Objects/SchematicObject.cs`). Its recursion is also O(n²):
   `blocks.Find`, `FindAll` and a LINQ `parentSchematics` array per block. The port builds a
@@ -511,18 +540,26 @@ Why this works:
 
 ### 3.9 Schematic simplification (`optimize_schematics`, cached per schematic file)
 
-1. **Drop blocks that produce nothing on the client**:
+1. **Do not network blocks that produce nothing on the client**:
    - `PrimitiveFlags.None` primitives
    - primitives with `MaterialColor.a == 0` that are not collidable
    - zero-scale blocks
    - unsupported block types
 
-   Keep them as anchors only if they have children or are referenced by an animator or rigidbody.
-2. **Skip empty groups.** Remove Empty blocks whose subtree contains no spawnable output and no
-   animator or rigidbody reference.
-3. **Collapse anchors for static schematics.** Compute world matrices once, then discard the anchors
-   unless the API asks for `AttachedBlocks`. ProjectMER spawns every Empty as a networked toy, so
-   steps 1-3 alone remove a large share of networked objects in typical exports.
+   They stay as server-only anchor GameObjects. Anchors cost nothing on the client, and plugins
+   find marker blocks (often empties or invisible primitives named `Spawnpoint` and the like) through
+   `AttachedBlocks`/`ObjectFromId`, so removing them would break those plugins without saving a
+   networked object.
+2. **Never network empty groups.** Empty blocks are server-only anchors (ProjectMER spawned each one
+   as a networked `None`-flag toy).
+
+   Measured on the server (phase A, `optimize_schematics: true`, ProjectMER count = root + one toy per
+   block + six per triangle): 35Hp 55 → 46, Battle 72 → 69, DeathParty 21 → 19, Jail 315 → 294,
+   Shipment 1130 → 1020, Skeld 2923 → 2558 (plus 119 of its 135 lights dropped by `max_lights`).
+3. **Anchors only where needed.** Static leaf blocks get no anchor; their world transform comes from a
+   scratch transform under the parent anchor (§3.2). Blocks with children, blocks without networked
+   output and animated or physics subtrees keep anchors. Discarding the remaining group anchors would
+   save only server memory and is not planned.
 4. **Merge cubes.**
    - Group static `Cube` blocks by:
      - quantized world rotation
@@ -725,6 +762,21 @@ Why this works:
 - A MER 13.2-era schematic with no `PrimitiveFlags` and named `ItemType`s.
 - An animated schematic (bundle) and a rigidbody schematic.
 - A ProjectMER map containing every object type, including all unsupported ones.
+
+**Server test setup.** Notes from running the phase A checks:
+
+- With `-key<session>` the file console drops every `ServerConsole` line (LabAPI and plugin logs and
+  command responses), so they are not in the Unity log either. A test-only plugin that adds an
+  `IOutput` to `ServerConsole.ConsoleOutputs` (it is recreated on round restart) and logs
+  `ServerEvents.CommandExecuted` responses makes them visible.
+- Without players the server enters idle mode after `idle_mode_time` (5 s): `targetFrameRate = 1` and
+  `timeScale = 0.01`, which stretches every spawn-queue and MEC timing. Set `idle_mode_enabled: false`
+  in `config_gameplay.txt` for measurements.
+- `tools/Send-ServerCommand.ps1` deletes command files that the server has not picked up yet when
+  `-WaitSec` is short (below about 1 s), so the command is lost.
+- Player-bound commands (`select`, `delete`, `modify`, `position`...) can run as the host hub with
+  `CommandProcessor.ProcessQuery(query, new PlayerCommandSender(ReferenceHub.HostHub))`.
+  `ServerDummy.Spawn` threw a `NullReferenceException` outside a running round.
 
 **Server checks.**
 
