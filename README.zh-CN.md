@@ -14,6 +14,13 @@ Carl Mod 是 SCP: Secret Laboratory 的手机版分支，本插件运行在 [Lab
 
 - 已安装 [LabAPI-Mobile](https://github.com/Michaelihc/labapimobile) 的 Carl Mod 专用服务器（安装方法见其 README）。
   LabAPI-Mobile 提供 `LabApi.dll` 和 Harmony，ProjectMER 不需要其他文件。
+- 支持的服务端版本：Carl Mod 0.0.5、官方发布的 0.0.4 服务端，以及带死斗（deathmatch）模块的 0.0.4 版本。同一个
+  `ProjectMER.dll` 可在这三个版本上运行，三个版本均已配合 LabAPI-Mobile 1.1.7-mobile.5 测试。
+- LabAPI-Mobile 版本：Carl Mod 0.0.5 需要 LabAPI-Mobile **1.1.7-mobile.5 或更高版本**；更早的 LabAPI-Mobile 版本完全无法在
+  0.0.5 上运行。在 0.0.4 上同样请使用 1.1.7-mobile.5 或更高版本（两个 0.0.4 版本上测试的就是这个版本）。
+- 玩家需要使用与服务端游戏版本相同的安卓客户端：0.0.4 客户端无法加入 0.0.5 服务端。客户端上的表现（手机渲染的内容、
+  工具枪按键、下文的帧时间）是在 0.0.4 上用 0.0.4 客户端验证的。在 0.0.5 上，ProjectMER 只做了服务端验证（使用服务端
+  假人）：地图和蓝图、全部指令、生成队列、卸载和回合重启，以及工具枪在服务端处理的请求。
 
 ## 安装
 
@@ -33,7 +40,8 @@ Carl Mod 是 SCP: Secret Laboratory 的手机版分支，本插件运行在 [Lab
 
 ## 指令
 
-远程管理（RA）指令 `mapeditor`（别名 `mer`、`mp`）。单独输入 `mp` 可查看列表。
+远程管理（RA）指令 `mapeditor`（别名 `mer`、`mp`）。单独输入 `mp` 可查看列表。在服务器控制台中输入时要加前导斜杠
+（`/mp list`）。
 
 | 指令 | 别名 | 用途 |
 | --- | --- | --- |
@@ -185,8 +193,9 @@ dotnet build ProjectMER-Mobile.sln -c Release
 构建会编译 `../labapimobile/src/LabApi`，并引用 `../labapimobile/.runtime/server-original/Carl Mod_Data/Managed` 中的游戏
 程序集，该目录由 LabAPI-Mobile 的 `tools/extract-server.py` 生成（见其 README）。两个位置都可以覆盖：
 `-p:LabApiMobileRoot=<checkout>` 和 `-p:CarlManaged=<server>\Carl Mod_Data\Managed`（`Package.ps1` 对应参数为
-`-LabApiMobileRoot` 和 `-CarlManaged`）。如果 `ProjectMER.dll` 引用了游戏、LabAPI-Mobile 和 Harmony 都不提供的程序集，
-`Package.ps1` 会报错。
+`-LabApiMobileRoot` 和 `-CarlManaged`）。`CarlManaged` 必须是 0.0.4 服务端（任一 0.0.4 版本）的 `Managed` 文件夹：
+LabAPI-Mobile 的源码使用 0.0.5 已改名的 0.0.4 成员名。编译结果可在全部三个服务端版本上运行。如果 `ProjectMER.dll` 引用了
+游戏、LabAPI-Mobile 和 Harmony 都不提供的程序集，`Package.ps1` 会报错。
 
 [docs/testing.md](docs/testing.md)（英文）介绍了测试服务器、测试数据（`tools/make-mer-fixtures.py`）和安卓客户端上的检查，
 使用的是 LabAPI-Mobile 仓库中的测试工具。

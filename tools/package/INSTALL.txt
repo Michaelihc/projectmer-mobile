@@ -7,8 +7,14 @@ Built from commit {{COMMIT}}.
 
 Requirements
 ------------
-LabAPI-Mobile installed on the server:
+A Carl Mod server: 0.0.5, the official 0.0.4 server distribution or the
+0.0.4 build with the deathmatch module, with LabAPI-Mobile installed:
 https://github.com/Michaelihc/labapimobile
+
+Carl Mod 0.0.5 needs LabAPI-Mobile 1.1.7-mobile.5 or later; earlier releases
+do not run on 0.0.5. Use 1.1.7-mobile.5 or later on 0.0.4 too (tested on both
+0.0.4 builds). Players need the Android client of the server's game version:
+the 0.0.4 client cannot join a 0.0.5 server.
 
 Install
 -------
@@ -27,7 +33,8 @@ Install
 4. Grant the commands in LabAPI-Mobile\configs\permissions.yml: "mpr.*" for a
    group, or "mpr.<command>" (for example mpr.load) per command.
 5. Use "mp" in the Remote Admin console ("mp list", "mp load <map>"). In the
-   phone's client console, type commands with a leading slash: /mp list
+   server console and the phone's client console, type commands with a
+   leading slash: /mp list
 
 Phones render every networked object. Keep maps small: about 150 visible
 primitives at a time is a good budget. "mp stats" shows the counts.

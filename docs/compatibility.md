@@ -14,6 +14,15 @@ States used in the tables:
 - **adapted**: same purpose, with a difference described in the notes.
 - **absent**: the client has no such object, or the feature does not exist in Carl Mod.
 
+## Carl Mod server builds
+
+One `ProjectMER.dll` runs on Carl Mod 0.0.5, the official 0.0.4 server distribution and the 0.0.4 build with the
+deathmatch module, with the same behaviour on each. It references no `CarlModExtras` member and no game member that
+exists on only some of the builds; every type and member it references (and the target of its warhead patch) resolves
+in the `Managed` folder of each build, and the network prefabs it spawns have the same names on all three. On 0.0.5 it
+needs LabAPI-Mobile 1.1.7-mobile.5 or later, the first release that runs on 0.0.5. The Android client must have the
+server's game version; ProjectMER on 0.0.5 is verified server-side only (the 0.0.4 client cannot join it).
+
 ## Map object types
 
 | YAML key | State | Notes |

@@ -15,6 +15,15 @@ fewer object types than SCP:SL 14 and a phone renders every networked object, so
 
 - A Carl Mod dedicated server with [LabAPI-Mobile](https://github.com/Michaelihc/labapimobile) installed (see its
   README). LabAPI-Mobile provides `LabApi.dll` and Harmony; ProjectMER needs no other files.
+- Supported server builds: Carl Mod 0.0.5, the official 0.0.4 server distribution and the 0.0.4 build with the
+  deathmatch module. The same `ProjectMER.dll` runs on all three, and all three are tested with LabAPI-Mobile
+  1.1.7-mobile.5.
+- LabAPI-Mobile version: Carl Mod 0.0.5 needs LabAPI-Mobile **1.1.7-mobile.5 or later**; earlier LabAPI-Mobile releases
+  do not run on 0.0.5 at all. On 0.0.4, use 1.1.7-mobile.5 or later as well (the version tested on both 0.0.4 builds).
+- Players need the Android client of the server's game version: the 0.0.4 client cannot join a 0.0.5 server. Client-side
+  behaviour (what phones render, the tool gun buttons, the frame times below) was verified with the 0.0.4 client on
+  0.0.4. On 0.0.5, ProjectMER was verified server-side only, with dummy players: maps and schematics, every command,
+  the spawn queue, unloading and round restarts, and the tool gun's server-side requests.
 
 ## Install
 
@@ -34,7 +43,8 @@ fewer object types than SCP:SL 14 and a phone renders every networked object, so
 
 ## Commands
 
-Remote Admin command `mapeditor` (aliases `mer`, `mp`). Run `mp` alone for the list.
+Remote Admin command `mapeditor` (aliases `mer`, `mp`). Run `mp` alone for the list. In the server console, type it
+with a leading slash (`/mp list`).
 
 | Command | Aliases | Use |
 | --- | --- | --- |
@@ -204,6 +214,8 @@ The build compiles `../labapimobile/src/LabApi` and references the game assembli
 `../labapimobile/.runtime/server-original/Carl Mod_Data/Managed`, which LabAPI-Mobile's `tools/extract-server.py`
 creates (see its README). Both locations can be overridden: `-p:LabApiMobileRoot=<checkout>` and
 `-p:CarlManaged=<server>\Carl Mod_Data\Managed` (`Package.ps1` takes `-LabApiMobileRoot` and `-CarlManaged`).
+`CarlManaged` must be the `Managed` folder of a 0.0.4 server (either 0.0.4 build): LabAPI-Mobile's source uses 0.0.4
+member names that 0.0.5 renamed. The result runs on all three server builds.
 `Package.ps1` fails if `ProjectMER.dll` references an assembly that neither the game, LabAPI-Mobile nor Harmony
 provides.
 

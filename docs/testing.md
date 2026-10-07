@@ -1,6 +1,6 @@
 # Testing ProjectMER
 
-ProjectMER is tested on a local Carl Mod server with LabAPI-Mobile installed and, for client behaviour and frame times,
+ProjectMER is tested on local Carl Mod servers with LabAPI-Mobile installed and, for client behaviour and frame times,
 with the stock Carl Mod Android client in an Android emulator. The test tools belong to LabAPI-Mobile and live in the
 sibling `labapimobile` checkout:
 
@@ -21,11 +21,24 @@ $mer = (Resolve-Path .).Path                    # this repository
 $lam = (Resolve-Path ..\labapimobile).Path      # the LabAPI-Mobile checkout
 ```
 
+## Server builds
+
+ProjectMER runs on three Carl Mod server builds, which LabAPI-Mobile's `tools/extract-server.py` extracts into its
+`.runtime/` folder: `server-original` (0.0.4 with the deathmatch module), `server-official-004` (the official 0.0.4
+server distribution) and `server-original-005` (Carl Mod 0.0.5). Changes are tested on copies of each, one port per
+server, with LabAPI-Mobile 1.1.7-mobile.5 or later (the first release that runs on 0.0.5). The startup log reads
+`Applied 187 patch classes ... (0 failed, 0 skipped ...)` and ProjectMER logs `Registered all 21 MER network prefabs.`
+when the first lobby loads, on every build.
+
+The Android client must have the server's game version, and only a 0.0.4 client is available, so client checks run on
+0.0.4 and 0.0.5 is tested server-side (below).
+
 ## Build and install on a test server
 
 ```powershell
 $server = "$lam\.runtime\server-emu"
-if (-not (Test-Path $server)) {                 # a server copy; never install into server-original
+if (-not (Test-Path $server)) {                 # a server copy; never install into the extracted servers
+    # server-original (0.0.4 deathmatch), server-official-004 or server-original-005
     robocopy "$lam\.runtime\server-original" $server /E /NFL /NDL /NJH /NJS /NP | Out-Null
     Set-Content "$server\hoster_policy.txt" 'gamedir_for_configs: true' -Encoding ASCII
 }
@@ -39,10 +52,33 @@ Copy-Item C:\tmp\pmer-test\bin\ProjectMER\release\ProjectMER.dll, C:\tmp\pmer-te
 ```
 
 `hoster_policy.txt` keeps the server's configs in its own `AppData` folder instead of your real `%APPDATA%`. The log shows
-`[LabApi] [PATCHES] Applied ... (0 failed)` and `ProjectMER ... enabled`. Send commands with
-`& "$lam\tools\Send-ServerCommand.ps1" -ServerDir $server -Command "mp list"` and read the replies in
-the server log (EventProbe mirrors the console there). Stop the server with
-`& "$lam\tools\Stop-TestServer.ps1" -Port 7791`.
+`[LabApi] [PATCHES] Applied ... (0 failed, 0 skipped ...)` and `ProjectMER ... enabled`. Send Remote Admin commands
+with a leading slash, `& "$lam\tools\Send-ServerCommand.ps1" -ServerDir $server -Command "/mp list"` (without it the
+server console answers `Command mp does not exist!`), and read the replies in the server log (EventProbe mirrors the
+console there). Send one command at a time and wait for it (the script's default `-WaitSec`); the script deletes a
+command file the server has not read yet. Stop the server with `& "$lam\tools\Stop-TestServer.ps1" -Port 7791`.
+
+## Server-side tests (all builds; the only tests on 0.0.5)
+
+Without a client, drive ProjectMER from the file console and a test plugin:
+
+- Start the server with `-ConfigOverrides @{ afk_time = '0'; idle_mode_enabled = 'false' }`. In idle mode (no player
+  connected) the server runs at one tick per second, which stretches every spawn and destroy batch.
+- Map commands run from the console: `/mp load <map>`, `/mp unload [map]`, `/mp save`, `/mp merge`, `/mp list`,
+  `/mp stats`, `/mp optimize`, `/mp prefabs`. With `log_spawn_stats`, each load ends with
+  `Spawn queue drained: N spawned in ... over F frames, max 10/frame`; an unload destroys in batches.
+- Player-bound commands (`create` at the crosshair, `select`, `position`, `rotation`, `scale`, `modify`, `delete`,
+  `indicators`, `toolgun`) need a player. A test plugin spawns a dummy (`ServerDummy.Spawn` works on 0.0.5; on 0.0.4 it
+  throws while setting the nickname, so copy its body and run `NicknameSync.Start` before `UpdateNickname`), points its
+  camera (`PlayerCameraReference`) and runs ProjectMER's `mp` command with a `PlayerCommandSender` for it. Dummies get
+  the `default` group of `LabAPI-Mobile\configs\permissions.yml`, so grant `mpr.*` there.
+- Tool gun buttons are firearm requests from the client. The test plugin sends them for the dummy's equipped tool gun
+  with `FirearmBasicMessagesHandler.ServerRequestReceived(conn, new RequestMessage(serial, type))`: `Dryfire` (attack:
+  create or delete at the crosshair, select while `AdsIn`), `Inspect` and `ToggleFlashlight` (create/delete),
+  `Reload` (previous entry); the drop command (`Inventory.CmdDropItem`) selects the next entry. Firing a real shot,
+  the HUD hints and what the client renders need the Android client.
+- Check object counts before and after (`NetworkServer.spawned`, `AdminToyBase` toys, `MerBlockLink`s, `mp stats`):
+  unloading every map and restarting the round must return them to the facility's own objects.
 
 ## Fixtures
 
